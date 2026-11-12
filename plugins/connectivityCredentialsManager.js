@@ -215,7 +215,7 @@ function extractFormData() {
 }
 
 // Redirect old multi-phase approach to sequential for backward compatibility
-window.fillFormFieldsMultiPhase = window.fillFormFieldsSequential;
+window.fillFormFieldsMultiPhase = (profileData) => window.fillFormFieldsSequential(profileData);
 
 // ============================================================================
 // NEW SEQUENTIAL APPROACH - Fills fields one by one from top to bottom
@@ -403,6 +403,41 @@ async function fillSapRadio(element, fieldData) {
     return false;
 }
 
+// Page world bridge (connectivityCredentialsManager-inject.js): sets a sap.m.Select through the UI5 API
+let connectivityBridgeReady = null;
+
+function ensureConnectivityBridge() {
+    if (!connectivityBridgeReady) {
+        connectivityBridgeReady = new Promise((resolve) => {
+            const script = document.createElement('script');
+            script.src = chrome.runtime.getURL('plugins/connectivityCredentialsManager-inject.js');
+            script.onload = () => resolve(true);
+            script.onerror = () => resolve(false);
+            (document.head || document.documentElement).appendChild(script);
+        });
+    }
+    return connectivityBridgeReady;
+}
+
+async function setSelectKeyViaUi5(controlId, key, timeout = 1500) {
+    if (!(await ensureConnectivityBridge())) return false;
+    const requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    return new Promise((resolve) => {
+        const onMessage = (event) => {
+            if (event.source !== window || event.data?.source !== 'cpih-conn-reply' || event.data.requestId !== requestId) return;
+            window.removeEventListener('message', onMessage);
+            clearTimeout(timer);
+            resolve(event.data.ok === true && event.data.key === key);
+        };
+        const timer = setTimeout(() => {
+            window.removeEventListener('message', onMessage);
+            resolve(false);
+        }, timeout);
+        window.addEventListener('message', onMessage);
+        window.postMessage({ source: 'cpih-conn', type: 'setSelectKey', requestId, id: controlId, key }, window.location.origin);
+    });
+}
+
 // Fill SAP UI5 select dropdown
 async function fillSapSelect(element, fieldData) {
     
@@ -418,6 +453,13 @@ async function fillSapSelect(element, fieldData) {
     
     if (!selectWrapper) {
         return false;
+    }
+
+    // The saved value is the item key (hidden input). Through the UI5 API this works for every select; the
+    // key press approach below only knows Proxy Type and stays as fallback when the bridge does not answer
+    if (await setSelectKeyViaUi5(selectWrapper.id, fieldData.value)) {
+        await wait(150);
+        return true;
     }
     
     // Method 1: Simple keyboard approach (like we did for checkboxes)
@@ -699,105 +741,66 @@ async function fillSingleField(element, fieldData) {
     }
 }
 
-// MAIN SEQUENTIAL FILL FUNCTION
-window.fillFormFieldsSequential = async function(profileData) {
+// Fills the form top to bottom. Dependent fields (Location ID after Proxy Type, Folder after "Check Mailbox
+// Content", ...) only appear once the field they depend on is set, and other fields can disappear at the same
+// time, so fields are tracked by id and the form is scanned again until a pass finds nothing new.
+// onProgress(processed, total) is called before each field.
+async function fillProfileFields(profileData, onProgress = null) {
     if (!profileData || !profileData.fields) {
         return 0;
     }
-    
+
+    const totalFields = Object.keys(profileData.fields).length;
+    const handled = new Set();
     let filledCount = 0;
-    
-    // 1. Get all visible form elements
-    const elements = getAllVisibleFormElements();
-    
-    // 2. Sort by position (top to bottom, left to right)
-    const sortedElements = sortByPosition(elements);
-    
-    // 3. Fill each element sequentially
-    for (const element of sortedElements) {
-        const fieldData = findFieldDataForElement(element, profileData);
-        if (fieldData) {
-            const success = await fillSingleField(element, fieldData);
-            if (success) {
+    let processed = 0;
+
+    for (let pass = 0; pass < 5; pass++) {
+        let progressed = false;
+        const queue = sortByPosition(getAllVisibleFormElements());
+
+        for (let i = 0; i < queue.length; i++) {
+            const element = queue[i];
+            if (handled.has(element.id)) continue;
+            const fieldData = findFieldDataForElement(element, profileData);
+            if (!fieldData) continue;
+
+            handled.add(element.id);
+            progressed = true;
+            processed++;
+            onProgress?.(processed, totalFields);
+
+            if (await fillSingleField(element, fieldData)) {
                 filledCount++;
-                
-                // Wait between fields to allow dynamic fields to appear
-                await wait(150);
-                
-                // Check if new elements appeared after filling this field
-                const newElements = getAllVisibleFormElements();
-                if (newElements.length > elements.length) {
-                    // Add new elements to the list
-                    for (const newEl of newElements) {
-                        if (!sortedElements.find(el => el.id === newEl.id)) {
-                            sortedElements.push(newEl);
-                        }
-                    }
-                    // Re-sort to maintain order
-                    sortByPosition(sortedElements);
-                }
             }
+
+            // let the page show the fields that depend on this one, they are filled in this pass when they come
+            // below the current field, otherwise in the next one
+            await wait(150);
+            for (const candidate of getAllVisibleFormElements()) {
+                if (!queue.includes(candidate)) queue.push(candidate);
+            }
+            const rest = sortByPosition(queue.slice(i + 1));
+            queue.splice(i + 1, rest.length, ...rest);
         }
+
+        if (!progressed) break;
+        await wait(300);
     }
-    
+
     return filledCount;
-};
+}
+
+window.fillFormFieldsSequential = (profileData) => fillProfileFields(profileData);
 
 // Keep backward compatibility - redirect to sequential method
 window.fillFormFields = window.fillFormFieldsSequential;
 
 // Enhanced version with progress indicator
-window.fillFormFieldsWithProgress = async function(profileData) {
-    if (!profileData || !profileData.fields) {
-        return 0;
-    }
-    
-    const totalFields = Object.keys(profileData.fields).length;
-    let currentField = 0;
-    
-    let filledCount = 0;
-    
-    // Get all visible form elements
-    const elements = getAllVisibleFormElements();
-    
-    // Sort by position (top to bottom, left to right)
-    const sortedElements = sortByPosition(elements);
-    
-    // Fill each element sequentially with progress updates
-    for (const element of sortedElements) {
-        const fieldData = findFieldDataForElement(element, profileData);
-        if (fieldData) {
-            currentField++;
-            
-            // Update progress indicator
-            updateBusyIndicator(`Processing field ${currentField}/${totalFields}`, 
-                              Math.round((currentField / totalFields) * 100));
-            
-            const success = await fillSingleField(element, fieldData);
-            if (success) {
-                filledCount++;
-                
-                // Wait between fields to allow dynamic fields to appear
-                await wait(150);
-                
-                // Check if new elements appeared after filling this field
-                const newElements = getAllVisibleFormElements();
-                if (newElements.length > elements.length) {
-                    // Add new elements to the list
-                    for (const newEl of newElements) {
-                        if (!sortedElements.find(el => el.id === newEl.id)) {
-                            sortedElements.push(newEl);
-                        }
-                    }
-                    // Re-sort to maintain order
-                    sortByPosition(sortedElements);
-                }
-            }
-        }
-    }
-    
-    return filledCount;
-};
+window.fillFormFieldsWithProgress = (profileData) =>
+    fillProfileFields(profileData, (current, total) => {
+        updateBusyIndicator(`Processing field ${current}/${total}`, Math.round((current / total) * 100));
+    });
 
 // Storage functions
 async function getStoredProfiles() {
