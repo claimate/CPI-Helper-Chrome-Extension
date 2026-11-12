@@ -1011,20 +1011,36 @@ function showNotification(title, message, type = 'info') {
     }
 }
 
+// Header of the Connectivity Test page. Older tenants render a sap.m.Page with the plain id
+// "PageConnectivity"; newer ones render a sap.f.DynamicPage whose id carries the view prefix
+// ("__component0---...Connectivity--PageConnectivity") and whose header is "<id>-header".
+function findConnectivityHeader() {
+    return document.querySelector('#PageConnectivity > header.sapMPageHeader')
+        || document.querySelector('[id$="--PageConnectivity-header"].sapFDynamicPageTitleWrapper');
+}
+
 function createUI() {
     // Don't create if already exists
     if (document.querySelector('#cpiConnectivityControls')) return;
-    
+
     // Find the header bar
-    const header = document.querySelector('#PageConnectivity > header.sapMPageHeader');
+    const header = findConnectivityHeader();
     if (!header) {
         console.log('[Connectivity Manager] Header not found, retrying...');
         return;
     }
 
-    // Find or create right area in header bar
-    let rightArea = header.querySelector('.sapMBarRight');
+    // sap.f.DynamicPage title: put the controls into the (empty) main actions area, right aligned
+    let rightArea = header.querySelector('.sapFDynamicPageTitleMainActions');
     let useFlexPush = false;
+    if (rightArea) {
+        rightArea.style.display = 'flex';
+        rightArea.style.justifyContent = 'flex-end';
+        rightArea.style.alignItems = 'center';
+    }
+
+    // Find or create right area in header bar
+    if (!rightArea) rightArea = header.querySelector('.sapMBarRight');
     if (!rightArea) {
         const barMiddle = header.querySelector('.sapMBarMiddle');
         if (barMiddle && barMiddle.parentNode) {
@@ -1723,7 +1739,7 @@ function initializePlugin() {
         }
         
         connectivityCredentialsState.observer = new MutationObserver((mutations, observer) => {
-            if (document.querySelector('#PageConnectivity > header.sapMPageHeader')) {
+            if (findConnectivityHeader()) {
                 createUI();
                 if (document.querySelector('#cpiConnectivityControls')) {
                     observer.disconnect();
