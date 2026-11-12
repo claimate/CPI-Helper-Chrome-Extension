@@ -846,168 +846,118 @@ async function deleteProfileFromStorage(profileName) {
     });
 }
 
-// Busy Indicator Functions
-function showBusyIndicator(profileName, profileData) {
-    // Remove any existing indicator
+// ============================================================================
+// UI - header buttons use the SAP sap.m.Button markup so the tenant theme styles them (Horizon, dark mode,
+// hover, focus). Dialogs use the CPI Helper 4 UI kit (showBigPopup / cpihModal / cpihConfirm / ui.css), the
+// plugin specific look lives in css/plugin.css under ".cpihConn".
+// ============================================================================
+
+const CPIH_CONN_MODAL = '#cpiHelper_semanticui_modal';
+
+// SAP-icons glyphs (sap/ui/core/IconPool)
+const CPIH_CONN_ICONS = {
+    save: '',
+    load: '',
+    manage: '',
+    help: ''
+};
+
+function escapeHtml(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function formatProfileDate(iso) {
+    const date = new Date(iso);
+    if (isNaN(date)) return '';
+    return `${date.toLocaleDateString()} ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+}
+
+function profileFieldCount(profile) {
+    return Object.keys(profile?.data?.fields || {}).length;
+}
+
+function pluralize(count, word) {
+    return `${count} ${word}${count === 1 ? '' : 's'}`;
+}
+
+// Busy indicator while a profile is filled into the form (the fill is sequential and can take a few seconds)
+function showBusyIndicator(profileName) {
     hideBusyIndicator();
-    
-    // Create overlay
+
     const overlay = document.createElement('div');
     overlay.id = 'cpiConnectivityBusyOverlay';
-    overlay.style.cssText = `
-        position: fixed;
-        top: 0;
-        left: 0;
-        right: 0;
-        bottom: 0;
-        background: rgba(0, 0, 0, 0.5);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        z-index: 10000;
+    overlay.className = 'cpihConn-busy';
+    overlay.innerHTML = `
+        <div class="cpihConn-busy-card" role="status" aria-live="polite">
+            <div class="cpihConn-busy-header">Loading profile</div>
+            <div class="cpihConn-busy-body">
+                <div class="cpihConn-busy-name">${escapeHtml(profileName)}</div>
+                <div class="cpihConn-progress"><div id="cpiConnectivityProgress" class="cpihConn-progress-bar"></div></div>
+                <div id="cpiConnectivityStatus" class="cpihConn-busy-status">Initializing...</div>
+            </div>
+        </div>
     `;
-    
-    // Create indicator container
-    const indicator = document.createElement('div');
-    indicator.style.cssText = `
-        background: white;
-        border-radius: 10px;
-        padding: 30px;
-        box-shadow: 0 4px 20px rgba(0,0,0,0.3);
-        text-align: center;
-        min-width: 300px;
-        max-width: 400px;
-    `;
-    
-    // Add content
-    indicator.innerHTML = `
-        <div style="margin-bottom: 20px;">
-            <div style="font-size: 48px; margin-bottom: 10px;">⚙️</div>
-            <h3 style="margin: 0 0 10px 0; color: #333;">Loading Profile</h3>
-            <p style="margin: 0 0 20px 0; color: #666; font-weight: bold;">${profileName}</p>
-        </div>
-        <div style="position: relative; height: 30px; background: #f0f0f0; border-radius: 15px; overflow: hidden;">
-            <div id="cpiConnectivityProgress" style="
-                position: absolute;
-                left: 0;
-                top: 0;
-                height: 100%;
-                background: linear-gradient(90deg, #4CAF50, #45a049);
-                border-radius: 15px;
-                width: 0%;
-                transition: width 0.3s ease;
-            "></div>
-        </div>
-        <div id="cpiConnectivityStatus" style="margin-top: 15px; color: #666; font-size: 14px;">
-            Initializing...
-        </div>
-        <div style="margin-top: 20px;">
-            <div class="spinner" style="
-                border: 3px solid #f3f3f3;
-                border-top: 3px solid #4CAF50;
-                border-radius: 50%;
-                width: 30px;
-                height: 30px;
-                animation: spin 1s linear infinite;
-                margin: 0 auto;
-            "></div>
-        </div>
-        <style>
-            @keyframes spin {
-                0% { transform: rotate(0deg); }
-                100% { transform: rotate(360deg); }
-            }
-        </style>
-    `;
-    
-    overlay.appendChild(indicator);
-    document.body.appendChild(overlay);
+    // inside #cpihelperglobal so the CPI Helper theme class (ch_light / ch_dark) applies
+    (typeof cpihRoot === 'function' ? cpihRoot() : document.body).appendChild(overlay);
 }
 
 function updateBusyIndicator(status, progress) {
     const statusEl = document.getElementById('cpiConnectivityStatus');
     const progressEl = document.getElementById('cpiConnectivityProgress');
-    
-    if (statusEl) {
-        statusEl.textContent = status;
-    }
-    
-    if (progressEl && progress !== undefined) {
-        progressEl.style.width = `${progress}%`;
-    }
+    if (statusEl) statusEl.textContent = status;
+    if (progressEl && progress !== undefined) progressEl.style.width = `${Math.max(0, Math.min(100, progress))}%`;
 }
 
 function hideBusyIndicator() {
-    const overlay = document.getElementById('cpiConnectivityBusyOverlay');
-    if (overlay) {
-        overlay.remove();
-    }
+    document.getElementById('cpiConnectivityBusyOverlay')?.remove();
 }
 
-// UI Creation functions
-function createButton(text, title, onClick) {
+// A transparent sap.m.Button, optionally with an SAP icon. Same DOM as UI5 renders, so the page CSS styles it.
+function createButton(text, title, onClick, icon = null) {
     const button = document.createElement('button');
-    button.className = 'sapMBtn sapMBtnBase';
-    button.textContent = text;
+    button.type = 'button';
+    button.className = 'sapMBtnBase sapMBtn cpihConn-headerBtn';
     button.title = title;
-    
-    // Style to match SAP Fiori theme
-    button.style.cssText = `
-        height: 2rem;
-        line-height: 2rem;
-        padding: 0 0.875rem;
-        margin: 0 0.125rem;
-        border: none;
-        border-radius: 0.25rem;
-        background-color: transparent;
-        color: #0070b1;
-        font-size: 0.875rem;
-        font-family: "72", "72full", Arial, Helvetica, sans-serif;
-        font-weight: normal;
-        cursor: pointer;
-        transition: background-color 0.1s;
-        white-space: nowrap;
-    `;
-    
-    // Add hover effect
-    button.addEventListener('mouseenter', () => {
-        button.style.backgroundColor = 'rgba(0, 112, 177, 0.1)';
-    });
-    
-    button.addEventListener('mouseleave', () => {
-        button.style.backgroundColor = 'transparent';
-    });
-    
-    // Add active/pressed effect
-    button.addEventListener('mousedown', () => {
-        button.style.backgroundColor = 'rgba(0, 112, 177, 0.2)';
-    });
-    
-    button.addEventListener('mouseup', () => {
-        button.style.backgroundColor = 'rgba(0, 112, 177, 0.1)';
-    });
-    
-    // Add focus outline
-    button.addEventListener('focus', () => {
-        button.style.outline = '1px dotted #0070b1';
-        button.style.outlineOffset = '2px';
-    });
-    
-    button.addEventListener('blur', () => {
-        button.style.outline = 'none';
-    });
-    
+    button.setAttribute('aria-label', title);
+
+    const inner = document.createElement('span');
+    inner.className = 'sapMBtnInner sapMBtnHoverable sapMFocusable sapMBtnTransparent';
+
+    if (icon) {
+        inner.classList.add('sapMBtnIconFirst');
+        const iconEl = document.createElement('span');
+        iconEl.className = 'sapUiIcon sapUiIconMirrorInRTL sapMBtnIcon sapMBtnIconLeft';
+        iconEl.setAttribute('data-sap-ui-icon-content', icon);
+        iconEl.setAttribute('aria-hidden', 'true');
+        iconEl.style.fontFamily = "'SAP-icons'";
+        inner.appendChild(iconEl);
+    }
+
+    if (text) {
+        inner.classList.add('sapMBtnText');
+        const content = document.createElement('span');
+        content.className = 'sapMBtnContent';
+        const bdi = document.createElement('bdi');
+        bdi.textContent = text;
+        content.appendChild(bdi);
+        inner.appendChild(content);
+    }
+
+    button.appendChild(inner);
     button.addEventListener('click', onClick);
     return button;
 }
 
 function showNotification(title, message, type = 'info') {
-    // Use CPI Helper's toast if available
     if (typeof showToast === 'function') {
         // CPI Helper signature is showToast(message, title, type)
         showToast(message, title, type);
     } else {
-        // Fallback to console
         console.log(`[Connectivity Manager] ${title}: ${message}`);
     }
 }
@@ -1021,705 +971,400 @@ function findConnectivityHeader() {
 }
 
 function createUI() {
-    // Don't create if already exists
     if (document.querySelector('#cpiConnectivityControls')) return;
 
-    // Find the header bar
     const header = findConnectivityHeader();
     if (!header) {
         console.log('[Connectivity Manager] Header not found, retrying...');
         return;
     }
 
-    // sap.f.DynamicPage title: put the controls into the (empty) main actions area, right aligned
-    let rightArea = header.querySelector('.sapFDynamicPageTitleMainActions');
-    let useFlexPush = false;
-    if (rightArea) {
-        rightArea.style.display = 'flex';
-        rightArea.style.justifyContent = 'flex-end';
-        rightArea.style.alignItems = 'center';
-    }
-
-    // Find or create right area in header bar
-    if (!rightArea) rightArea = header.querySelector('.sapMBarRight');
-    if (!rightArea) {
-        const barMiddle = header.querySelector('.sapMBarMiddle');
-        if (barMiddle && barMiddle.parentNode) {
-            rightArea = document.createElement('div');
-            rightArea.className = 'sapMBarRight sapMBarContainer';
-            barMiddle.parentNode.appendChild(rightArea);
+    // sap.f.DynamicPage: the title's main actions area (empty on this page), right aligned
+    let target = header.querySelector('.sapFDynamicPageTitleMainActions');
+    let pushRight = false;
+    if (target) {
+        target.classList.add('cpihConn-actionsHost');
+    } else {
+        // sap.m.Page header bar (older tenants)
+        target = header.querySelector('.sapMBarRight');
+        if (!target) {
+            const barMiddle = header.querySelector('.sapMBarMiddle');
+            if (barMiddle?.parentNode) {
+                target = document.createElement('div');
+                target.className = 'sapMBarRight sapMBarContainer';
+                barMiddle.parentNode.appendChild(target);
+            }
+        }
+        if (!target) {
+            target = header.querySelector('.sapMTB') || header.firstElementChild;
+            pushRight = !!target;
         }
     }
 
-    // New Integration Suite shell: header is a sapMTB flex toolbar containing only
-    // the breadcrumb. Inject directly into the toolbar and push our controls right.
-    if (!rightArea) {
-        rightArea = header.querySelector('.sapMTB') || header.firstElementChild;
-        useFlexPush = !!rightArea;
-    }
-
-    if (!rightArea) {
-        console.log('[Connectivity Manager] Could not create right area');
+    if (!target) {
+        console.log('[Connectivity Manager] Could not find a place for the controls');
         return;
     }
 
-    // Create container for our controls
-    const controlsContainer = document.createElement('div');
-    controlsContainer.id = 'cpiConnectivityControls';
-    controlsContainer.style.cssText = `
-        display: inline-flex;
-        align-items: center;
-        margin-right: 0.5rem;
-        padding-left: 0.5rem;
-        border-left: 1px solid rgba(0, 0, 0, 0.1);
-        height: 2.5rem;
-        ${useFlexPush ? 'margin-left: auto;' : ''}
-    `;
-    
-    // Save button
-    const saveBtn = createButton('Save', 'Save current form data as a reusable profile', showSaveDialog);
-    
-    // Load button
-    const loadBtn = createButton('Load', 'Load a saved profile to fill the form', showLoadDialog);
-    
-    // Manage button
-    const manageBtn = createButton('Manage', 'View, edit, or delete saved profiles', showManageDialog);
-    
-    // Help button
-    const helpBtn = createButton('?', 'Help - How to use profiles', showHelpDialog);
-    helpBtn.style.minWidth = '1.5rem';
-    helpBtn.style.padding = '0 0.5rem';
-    helpBtn.style.marginLeft = '0.5rem';
-    helpBtn.style.borderLeft = '1px solid rgba(0, 0, 0, 0.1)';
-    helpBtn.style.paddingLeft = '0.75rem';
-    
-    controlsContainer.appendChild(saveBtn);
-    controlsContainer.appendChild(loadBtn);
-    controlsContainer.appendChild(manageBtn);
-    controlsContainer.appendChild(helpBtn);
-    
-    rightArea.appendChild(controlsContainer);
-    
+    const controls = document.createElement('div');
+    controls.id = 'cpiConnectivityControls';
+    controls.className = 'cpihConn-controls';
+    controls.setAttribute('role', 'toolbar');
+    controls.setAttribute('aria-label', 'Connectivity profiles (CPI Helper)');
+    if (pushRight) controls.style.marginLeft = 'auto';
+
+    controls.append(
+        createButton('Save', 'Save the current form as a profile (CPI Helper)', showSaveDialog, CPIH_CONN_ICONS.save),
+        createButton('Load', 'Fill the form from a saved profile (CPI Helper)', showLoadDialog, CPIH_CONN_ICONS.load),
+        createButton('Manage', 'View or delete saved profiles (CPI Helper)', showManageDialog, CPIH_CONN_ICONS.manage),
+        createButton('', 'Help for connectivity profiles (CPI Helper)', showHelpDialog, CPIH_CONN_ICONS.help)
+    );
+
+    target.appendChild(controls);
     console.log('[Connectivity Manager] UI created successfully');
 }
 
-// Create consistent dialog HTML
-function createDialogHTML(title, iconClass, content) {
-    return `
-        <div class="ui form" style="font-size: 14px;">
-            <h3 class="ui header" style="font-size: 1.28rem; margin-bottom: 1.5rem;">
-                <i class="${iconClass} icon" style="font-size: 1.2em;"></i>
-                <div class="content" style="padding-left: 0.5rem;">
-                    ${title}
+// Opens the shared CPI Helper modal with our own footer.
+// buttons: [{ text, icon?, primary?, negative?, onClick(modal) }] - a button without onClick just closes.
+async function openConnectivityDialog({ title, body, buttons = [], size = 'small' }) {
+    const node = typeof body === 'string' ? createElementFromHTML(`<div class="cpihConn">${body}</div>`) : body;
+    await showBigPopup(node, title, { fullscreen: false, closeText: 'Close' });
+
+    const modal = document.querySelector(CPIH_CONN_MODAL);
+    if (!modal) return null;
+    modal.classList.add(size, 'cpihConn-modal');
+    modal.querySelector('#cpiHelper_bigPopup_content_semanticui')?.style.removeProperty('min-height');
+
+    const actions = modal.querySelector('.actions');
+    if (actions && buttons.length) {
+        actions.replaceChildren(...buttons.map((spec) => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = `ui button${spec.primary ? ' primary' : ''}${spec.negative ? ' negative' : ''}`;
+            button.innerHTML = `${spec.icon ? `<i class="${spec.icon} icon"></i>` : ''}${escapeHtml(spec.text)}`;
+            button.addEventListener('click', () => (spec.onClick ? spec.onClick(modal) : cpihModal.hide(modal)));
+            return button;
+        }));
+    }
+    return modal;
+}
+
+function closeConnectivityDialog() {
+    cpihModal.hide(CPIH_CONN_MODAL);
+}
+
+function showHelpDialog() {
+    const body = `
+        <p class="cpihConn-lead">
+            Save the settings of a connectivity test once and fill them in again with one click,
+            for example to test the same SFTP server from several tenants.
+        </p>
+        <div class="ui relaxed list">
+            <div class="item">
+                <i class="save outline icon"></i>
+                <div class="content">
+                    <div class="header">Save</div>
+                    <div class="description">Fill in the form on a tab (TLS, SSH, FTP, ...), click Save and give the profile a name.</div>
                 </div>
-            </h3>
-            ${content}
+            </div>
+            <div class="item">
+                <i class="folder open outline icon"></i>
+                <div class="content">
+                    <div class="header">Load</div>
+                    <div class="description">Shows the profiles of the open tab. Click one to fill the form.</div>
+                </div>
+            </div>
+            <div class="item">
+                <i class="settings icon"></i>
+                <div class="content">
+                    <div class="header">Manage</div>
+                    <div class="description">See every profile with its values, or delete the ones you no longer need.</div>
+                </div>
+            </div>
+            <div class="item">
+                <i class="shield alternate icon"></i>
+                <div class="content">
+                    <div class="header">Where profiles are kept</div>
+                    <div class="description">Only in this browser's extension storage. Nothing is sent anywhere. Passwords are stored as entered, so do not save production secrets on a shared machine.</div>
+                </div>
+            </div>
+        </div>
+        <div class="ui info message">
+            <i class="lightbulb outline icon"></i>
+            Name profiles after system and environment, like "S/4 QA SFTP", so they are easy to tell apart.
+        </div>
+    `;
+    openConnectivityDialog({ title: 'Connectivity profiles', body, size: 'tiny', buttons: [{ text: 'Got it', primary: true }] });
+}
+
+async function showSaveDialog() {
+    const formData = extractFormData();
+    const fieldCount = Object.keys(formData.fields).length;
+
+    if (fieldCount === 0) {
+        showNotification('Nothing to save', 'Fill in some fields of the form first', 'warning');
+        return;
+    }
+
+    const profiles = await getStoredProfiles();
+    const body = `
+        <div class="ui form">
+            <div class="cpihConn-summary">
+                <span class="ui label">${escapeHtml(formData.type)}</span>
+                <span>${pluralize(fieldCount, 'field')} from the form</span>
+            </div>
+            <div class="field">
+                <label for="profileNameInput">Profile name</label>
+                <input type="text" id="profileNameInput" placeholder="e.g. S/4 QA SFTP" autocomplete="off" maxlength="80">
+            </div>
+            <div class="cpihConn-hint" id="profileNameHint" hidden>A profile with this name exists and will be overwritten.</div>
+        </div>
+    `;
+
+    const save = async () => {
+        const input = document.getElementById('profileNameInput');
+        const profileName = input?.value.trim();
+        if (!profileName) {
+            input?.focus();
+            showNotification('Name missing', 'Enter a name for the profile', 'error');
+            return;
+        }
+        if (await saveProfileToStorage(profileName, formData)) {
+            showNotification('Profile saved', `"${profileName}" saved`, 'success');
+            closeConnectivityDialog();
+        } else {
+            showNotification('Save failed', 'Could not save the profile', 'error');
+        }
+    };
+
+    const modal = await openConnectivityDialog({
+        title: 'Save connectivity profile',
+        body,
+        size: 'tiny',
+        buttons: [
+            { text: 'Cancel' },
+            { text: 'Save', icon: 'save', primary: true, onClick: save }
+        ]
+    });
+    if (!modal) return;
+
+    const input = modal.querySelector('#profileNameInput');
+    const hint = modal.querySelector('#profileNameHint');
+    input.addEventListener('input', () => {
+        hint.hidden = !profiles.some((p) => p.name === input.value.trim());
+    });
+    input.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            save();
+        }
+    });
+    requestAnimationFrame(() => input.focus());
+}
+
+// One row of a profile list. actions: html of the buttons on the right.
+// loadable: click fills the form; muted: shown but not loadable here (other connection type)
+function profileRowHTML(profile, { loadable = false, muted = false, showType = false, actions = '' } = {}) {
+    const meta = [
+        showType ? `<span class="ui label">${escapeHtml(profile.type)}</span>` : '',
+        pluralize(profileFieldCount(profile), 'field'),
+        escapeHtml(formatProfileDate(profile.updated))
+    ].filter(Boolean).join('<span class="cpihConn-dot">·</span>');
+
+    return `
+        <div class="cpihConn-row${loadable ? ' cpihConn-row--loadable' : ''}${muted ? ' cpihConn-row--muted' : ''}" data-profile-name="${escapeHtml(profile.name)}"
+             ${loadable ? 'role="button" tabindex="0" title="Fill the form with this profile"' : ''}>
+            <i class="${loadable ? 'file' : 'file outline'} icon"></i>
+            <div class="cpihConn-row-main">
+                <div class="cpihConn-row-name">${escapeHtml(profile.name)}</div>
+                <div class="cpihConn-row-meta">${meta}</div>
+            </div>
+            <div class="cpihConn-row-actions">${actions}</div>
         </div>
     `;
 }
 
-// Dialog functions
-function showHelpDialog() {
-    if (typeof showBigPopup === 'function' && typeof createElementFromHTML === 'function') {
-        const content = `
-            <div class="ui segments">
-                <div class="ui segment">
-                    <h4 class="ui header" style="font-size: 1rem;">
-                        <i class="info circle icon"></i>
-                        About Profile Manager
-                    </h4>
-                    <p style="font-size: 0.92rem; line-height: 1.5;">
-                        The Profile Manager helps you save and reuse connectivity test configurations. 
-                        This saves time when testing multiple environments or switching between different connection settings.
-                    </p>
-                </div>
-                
-                <div class="ui segment">
-                    <h4 class="ui header" style="font-size: 1rem;">
-                        <i class="list icon"></i>
-                        How to Use
-                    </h4>
-                    <div class="ui relaxed list" style="font-size: 0.92rem;">
-                        <div class="item">
-                            <i class="save outline icon"></i>
-                            <div class="content">
-                                <div class="header" style="font-size: 0.92rem;">Save Profile</div>
-                                <div class="description">Fill out the form with your connection details, then click Save to store them as a named profile.</div>
-                            </div>
-                        </div>
-                        <div class="item">
-                            <i class="folder open outline icon"></i>
-                            <div class="content">
-                                <div class="header" style="font-size: 0.92rem;">Load Profile</div>
-                                <div class="description">Click Load to see your saved profiles. Click on any profile to instantly fill the form with those values.</div>
-                            </div>
-                        </div>
-                        <div class="item">
-                            <i class="settings icon"></i>
-                            <div class="content">
-                                <div class="header" style="font-size: 0.92rem;">Manage Profiles</div>
-                                <div class="description">View all your profiles, see their details, or delete ones you no longer need.</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="ui segment">
-                    <h4 class="ui header" style="font-size: 1rem;">
-                        <i class="shield alternate icon"></i>
-                        Data Storage
-                    </h4>
-                    <p style="font-size: 0.92rem; line-height: 1.5;">
-                        All profiles are stored locally in your browser's Chrome storage. 
-                        No data is sent to external servers. Profiles are specific to each connection type (TLS, SSH, FTP, etc.).
-                    </p>
-                </div>
-                
-                <div class="ui info message" style="font-size: 0.9rem;">
-                    <i class="lightbulb outline icon"></i>
-                    <strong>Tip:</strong> Use descriptive names for your profiles like "Production SFTP" or "Test Environment SSH" to easily identify them later.
-                </div>
-            </div>
-        `;
-        
-        const html = createDialogHTML('Profile Manager Help', 'question circle', content);
-        showBigPopup(createElementFromHTML(html), 'Help');
-        
-        // Add close button to modal footer
-        setTimeout(() => {
-            const modalFooter = document.querySelector('#cpiHelper_semanticui_modal .actions');
-            if (modalFooter) {
-                modalFooter.innerHTML = `
-                    <button class="ui primary button" id="helpCloseBtn">
-                        Got it!
-                    </button>
-                `;
-                
-                document.getElementById('helpCloseBtn')?.addEventListener('click', () => {
-                    cpihModal.hide('#cpiHelper_semanticui_modal');
-                });
-            }
-        }, 100);
-    }
+function viewButtonHTML(profile) {
+    return `<button type="button" class="ui tertiary icon button cpihConn-view" data-profile-name="${escapeHtml(profile.name)}" title="Show values"><i class="eye icon"></i></button>`;
 }
 
-function showSaveDialog() {
-    const formData = extractFormData();
-    const fieldCount = Object.keys(formData.fields).length;
-    
-    if (fieldCount === 0) {
-        showNotification('No data to save', 'Please fill out some fields first', 'warning');
-        return;
+async function loadProfileIntoForm(profile) {
+    closeConnectivityDialog();
+    showBusyIndicator(profile.name);
+    let filledCount = 0;
+    try {
+        filledCount = await window.fillFormFieldsWithProgress(profile.data);
+    } finally {
+        hideBusyIndicator();
     }
-    
-    // Check if CPI Helper functions are available
-    if (typeof showBigPopup === 'function' && typeof createElementFromHTML === 'function') {
-        const content = `
-            <div class="ui info message" style="font-size: 0.92rem;">
-                <div class="header" style="font-size: 1rem; margin-bottom: 0.5rem;">Profile Details</div>
-                <p style="margin: 0.25rem 0;"><strong>Connection Type:</strong> ${formData.type}</p>
-                <p style="margin: 0.25rem 0;"><strong>Fields to save:</strong> ${fieldCount} fields</p>
-            </div>
-            <div class="field">
-                <label style="font-size: 0.92rem; font-weight: 600; margin-bottom: 0.5rem;">Profile Name</label>
-                <input type="text" id="profileNameInput" placeholder="e.g., Production SFTP Server" 
-                       style="font-size: 0.92rem; padding: 0.5rem;">
-            </div>
-        `;
-        
-        const html = createDialogHTML('Save Connectivity Profile', 'save', content);
-        
-        showBigPopup(createElementFromHTML(html), 'Save Profile');
-        
-        setTimeout(() => {
-            const input = document.getElementById('profileNameInput');
-            if (input) input.focus();
-            
-            // Add custom save button to modal footer
-            const modalFooter = document.querySelector('#cpiHelper_semanticui_modal .actions');
-            if (modalFooter) {
-                modalFooter.innerHTML = `
-                    <button class="ui button" id="saveCancelBtn">Cancel</button>
-                    <button class="ui primary button" id="saveProfileBtn">
-                        <i class="save icon"></i> Save Profile
-                    </button>
-                `;
-                
-                document.getElementById('saveCancelBtn')?.addEventListener('click', () => {
-                    cpihModal.hide('#cpiHelper_semanticui_modal');
-                });
-                
-                document.getElementById('saveProfileBtn')?.addEventListener('click', async () => {
-                    const profileName = document.getElementById('profileNameInput').value.trim();
-                    
-                    if (!profileName) {
-                        showNotification('Invalid name', 'Please enter a profile name', 'error');
-                        return;
-                    }
-                    
-                    const saved = await saveProfileToStorage(profileName, formData);
-                    
-                    if (saved) {
-                        showNotification('Profile saved', `"${profileName}" saved successfully`, 'success');
-                        cpihModal.hide('#cpiHelper_semanticui_modal');
-                    } else {
-                        showNotification('Save failed', 'Could not save profile', 'error');
-                    }
-                });
-            }
-        }, 100);
+    if (filledCount > 0) {
+        showNotification('Profile loaded', `${pluralize(filledCount, 'field')} filled from "${profile.name}"`, 'success');
     } else {
-        // Fallback to browser prompt
-        const profileName = prompt(`Save profile for ${formData.type} connection\n${fieldCount} fields will be saved.\n\nEnter profile name:`);
-        if (profileName) {
-            saveProfileToStorage(profileName.trim(), formData).then(saved => {
-                if (saved) {
-                    showNotification('Profile saved', `"${profileName}" saved successfully`, 'success');
-                } else {
-                    showNotification('Save failed', 'Could not save profile', 'error');
-                }
-            });
-        }
+        showNotification('Nothing filled', 'No field of the form matched the profile', 'warning');
     }
 }
 
 async function showLoadDialog() {
     const profiles = await getStoredProfiles();
     const currentTab = getCurrentTabType();
-    
+
     if (profiles.length === 0) {
-        showNotification('No profiles', 'No saved profiles found', 'info');
+        showNotification('No profiles yet', 'Save the form as a profile first', 'info');
         return;
     }
-    
-    const matchingProfiles = profiles.filter(p => p.type === currentTab);
-    const otherProfiles = profiles.filter(p => p.type !== currentTab);
-    
-    if (typeof showBigPopup === 'function' && typeof createElementFromHTML === 'function') {
-        let content = `
-            <div class="ui info message" style="font-size: 0.92rem;">
-                <i class="info circle icon"></i>
-                Current tab: <strong>${currentTab}</strong>
-            </div>
+
+    const matching = profiles.filter((p) => p.type === currentTab);
+    const other = profiles.filter((p) => p.type !== currentTab);
+
+    let body = `<div class="cpihConn-section-title">${escapeHtml(currentTab)} profiles</div>`;
+    body += matching.length
+        ? `<div class="cpihConn-list">${matching.map((p) => profileRowHTML(p, { loadable: true, actions: viewButtonHTML(p) })).join('')}</div>`
+        : `<div class="ui info message"><i class="info circle icon"></i>No profile for ${escapeHtml(currentTab)} yet. Fill in the form and use Save.</div>`;
+
+    if (other.length) {
+        body += `
+            <div class="cpihConn-section-title">Other connection types <span class="cpihConn-muted">· switch to their tab to load them</span></div>
+            <div class="cpihConn-list">${other.map((p) => profileRowHTML(p, { muted: true, showType: true, actions: viewButtonHTML(p) })).join('')}</div>
         `;
-        
-        if (matchingProfiles.length > 0) {
-            content += `
-                <h4 class="ui header" style="font-size: 1rem; margin-top: 1rem;">
-                    <i class="check circle icon" style="color: #21ba45;"></i>
-                    Matching Profiles
-                </h4>
-                <div class="ui relaxed divided list" style="font-size: 0.92rem;">`;
-            matchingProfiles.forEach(profile => {
-                const date = new Date(profile.updated);
-                const dateStr = `${date.toLocaleDateString()} ${date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`;
-                content += `
-                    <div class="item" style="padding: 0.75rem; background: #f0f9ff; border-radius: 0.25rem; margin: 0.5rem 0;">
-                        <div class="right floated content">
-                            <button class="ui tiny icon button view-quick-btn" data-profile-name="${profile.name}" 
-                                    title="View details" style="font-size: 0.85rem;">
-                                <i class="eye icon"></i>
-                            </button>
-                        </div>
-                        <div class="profile-item" style="cursor: pointer;" data-profile-name="${profile.name}">
-                            <i class="file icon" style="font-size: 1.2rem;"></i>
-                            <div class="content">
-                                <div class="header" style="font-size: 0.95rem; font-weight: 600;">${profile.name}</div>
-                                <div class="description" style="font-size: 0.85rem; color: #666;">
-                                    ${Object.keys(profile.data.fields).length} fields • ${dateStr}
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                `;
-            });
-            content += `</div>`;
-        }
-        
-        if (otherProfiles.length > 0) {
-            content += `
-                <h4 class="ui header" style="font-size: 1rem; margin-top: 1rem;">
-                    <i class="folder outline icon"></i>
-                    Other Profiles (Different Tab)
-                </h4>
-                <div class="ui warning message" style="font-size: 0.85rem; margin: 0.5rem 0;">
-                    <i class="warning icon"></i>
-                    These profiles are for different connection types and cannot be loaded on the current tab.
-                </div>
-                <div class="ui relaxed divided list" style="font-size: 0.92rem;">`;
-            otherProfiles.forEach(profile => {
-                const date = new Date(profile.updated);
-                const dateStr = `${date.toLocaleDateString()} ${date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`;
-                content += `
-                    <div class="item other-profile-item" style="padding: 0.75rem; opacity: 0.5; cursor: not-allowed;">
-                        <div class="right floated content">
-                            <button class="ui tiny icon button view-quick-btn" data-profile-name="${profile.name}" 
-                                    title="View details" style="font-size: 0.85rem;">
-                                <i class="eye icon"></i>
-                            </button>
-                        </div>
-                        <div style="pointer-events: none;">
-                            <i class="file outline icon" style="font-size: 1.2rem;"></i>
-                            <div class="content">
-                                <div class="header" style="font-size: 0.95rem; font-weight: 600;">${profile.name}</div>
-                                <div class="description" style="font-size: 0.85rem; color: #999;">
-                                    <strong>${profile.type}</strong> • ${Object.keys(profile.data.fields).length} fields • ${dateStr}
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                `;
-            });
-            content += `</div>`;
-        }
-        
-        const html = createDialogHTML('Load Profile', 'folder open', content);
-        
-        showBigPopup(createElementFromHTML(html), 'Load Profile');
-        
-        // Add event listeners after dialog is shown
-        setTimeout(() => {
-            // Load profile on click (only for matching profiles)
-            document.querySelectorAll('.profile-item').forEach(item => {
-                item.addEventListener('click', async function() {
-                    const profileName = this.getAttribute('data-profile-name');
-                    const profile = profiles.find(p => p.name === profileName);
-                    
-                    if (profile && profile.type === currentTab) {
-                        // Hide the modal immediately
-                        cpihModal.hide('#cpiHelper_semanticui_modal');
-                        
-                        // Show busy indicator
-                        showBusyIndicator(profileName, profile.data);
-                        
-                        // Fill the form with progress updates
-                        const filledCount = await window.fillFormFieldsWithProgress(profile.data);
-                        
-                        // Hide busy indicator
-                        hideBusyIndicator();
-                        
-                        if (filledCount > 0) {
-                            showNotification('Profile loaded', `Successfully loaded ${filledCount} fields from "${profileName}"`, 'success');
-                        } else {
-                            showNotification('Load failed', 'Could not fill any fields', 'warning');
-                        }
-                    }
-                });
-            });
-            
-            // Add click handler for other profile items to show warning
-            document.querySelectorAll('.other-profile-item').forEach(item => {
-                item.addEventListener('click', function(e) {
-                    e.stopPropagation();
-                    showNotification('Wrong tab', 'This profile is for a different connection type', 'warning');
-                });
-            });
-            
-            // View profile details on eye button click
-            document.querySelectorAll('.view-quick-btn').forEach(btn => {
-                btn.addEventListener('click', function(e) {
-                    e.stopPropagation(); // Prevent triggering the load
-                    const profileName = this.getAttribute('data-profile-name');
-                    const profile = profiles.find(p => p.name === profileName);
-                    if (profile) {
-                        showProfileDetails(profile);
-                    }
-                });
-            });
-        }, 100);
-    } else {
-        // Fallback to simple selection
-        let message = `Select profile to load:\n\nMatching (${currentTab}):\n`;
-        matchingProfiles.forEach((p, i) => {
-            message += `${i + 1}. ${p.name}\n`;
-        });
-        if (otherProfiles.length > 0) {
-            message += `\nOther profiles:\n`;
-            otherProfiles.forEach((p, i) => {
-                message += `${matchingProfiles.length + i + 1}. ${p.name} (${p.type})\n`;
-            });
-        }
-        
-        const selection = prompt(message + '\nEnter number:');
-        if (selection) {
-            const index = parseInt(selection) - 1;
-            const allProfiles = [...matchingProfiles, ...otherProfiles];
-            if (index >= 0 && index < allProfiles.length) {
-                const profile = allProfiles[index];
-                // Use window.fillFormFields and handle as Promise
-                window.fillFormFields(profile.data).then(filledCount => {
-                    if (filledCount > 0) {
-                        showNotification('Profile loaded', `Loaded ${filledCount} fields from "${profile.name}"`, 'success');
-                    } else {
-                        showNotification('Load failed', 'Could not fill any fields', 'warning');
-                    }
-                });
-            }
-        }
     }
+
+    const modal = await openConnectivityDialog({ title: 'Load connectivity profile', body, size: 'small', buttons: [{ text: 'Close' }] });
+    if (!modal) return;
+
+    const byName = (name) => profiles.find((p) => p.name === name);
+    modal.querySelectorAll('.cpihConn-row--loadable').forEach((row) => {
+        const load = () => {
+            const profile = byName(row.dataset.profileName);
+            if (profile) loadProfileIntoForm(profile);
+        };
+        row.addEventListener('click', load);
+        row.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                load();
+            }
+        });
+    });
+    modal.querySelectorAll('.cpihConn-view').forEach((button) => {
+        button.addEventListener('click', (event) => {
+            event.stopPropagation();
+            const profile = byName(button.dataset.profileName);
+            if (profile) showProfileDetails(profile, showLoadDialog);
+        });
+    });
 }
 
-function showProfileDetails(profile) {
-    if (typeof showBigPopup === 'function' && typeof createElementFromHTML === 'function') {
-        // Prepare field values for display
-        const fields = profile.data.fields;
-        let fieldRows = '';
-        
-        // Sort fields by their IDs for consistent display
-        const sortedFields = Object.entries(fields).sort((a, b) => {
-            const idA = a[1].id || a[0];
-            const idB = b[1].id || b[0];
-            return idA.localeCompare(idB);
-        });
-        
-        sortedFields.forEach(([fieldName, fieldData]) => {
-            // Clean up field name for display
-            let displayName = fieldName;
-            if (fieldData.id) {
-                // Extract meaningful name from ID
-                displayName = fieldData.id
-                    .replace(/^__component[\d-]+---/, '')
-                    .replace(/--/, ' ')
-                    .replace(/-CB$/, ' (Checkbox)')
-                    .replace(/-RB$/, ' (Radio)')
-                    .replace(/-inner$/, '')
-                    .replace(/-hiddenInput$/, '')
-                    .replace(/([a-z])([A-Z])/g, '$1 $2')
-                    .replace(/^inp|^chb|^rb|^cmb|^txt/, '')
-                    .trim();
-            }
-            
-            // Format value for display
-            let displayValue = fieldData.value;
-            if (fieldData.type === 'checkbox') {
-                displayValue = fieldData.value === 'on' ? '☑ Checked' : '☐ Unchecked';
-            } else if (fieldData.type === 'radio') {
-                displayValue = '◉ ' + displayValue;
-            } else if (fieldData.type === 'password' || displayName.toLowerCase().includes('password')) {
-                displayValue = '••••••••';
-            } else if (!displayValue) {
-                displayValue = '<em>empty</em>';
-            } else if (displayValue.length > 50) {
-                displayValue = displayValue.substring(0, 50) + '...';
-            }
-            
-            // Escape HTML
-            displayValue = String(displayValue).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-            
-            fieldRows += `
-                <tr>
-                    <td style="font-weight: 600; padding: 0.5rem 0.75rem; border-bottom: 1px solid #f0f0f0; font-size: 0.85rem;">
-                        ${displayName}
-                    </td>
-                    <td style="padding: 0.5rem 0.75rem; border-bottom: 1px solid #f0f0f0; font-family: 'Courier New', monospace; font-size: 0.85rem; color: #333;">
-                        ${displayValue}
-                    </td>
-                    <td style="padding: 0.5rem 0.75rem; border-bottom: 1px solid #f0f0f0; color: #888; font-size: 0.8rem;">
-                        ${fieldData.type}
-                    </td>
-                </tr>
-            `;
-        });
-        
-        const content = `
-            <div style="max-height: 600px; overflow-y: auto;">
-                <div class="ui segment" style="padding: 1rem;">
-                    <div style="display: flex; justify-content: space-around; text-align: center;">
-                        <div>
-                            <strong style="color: #666; font-size: 0.75rem; text-transform: uppercase;">Type</strong><br>
-                            <span style="font-size: 0.95rem; font-weight: 600;">${profile.type}</span>
-                        </div>
-                        <div>
-                            <strong style="color: #666; font-size: 0.75rem; text-transform: uppercase;">Fields</strong><br>
-                            <span style="font-size: 0.95rem; font-weight: 600;">${Object.keys(fields).length}</span>
-                        </div>
-                        <div>
-                            <strong style="color: #666; font-size: 0.75rem; text-transform: uppercase;">Updated</strong><br>
-                            <span style="font-size: 0.95rem; font-weight: 600;">${new Date(profile.updated).toLocaleDateString()}</span>
-                        </div>
-                    </div>
-                </div>
-                
-                <h4 class="ui header" style="font-size: 1rem; margin-top: 1rem;">
-                    <i class="list icon"></i>
-                    Field Values
-                </h4>
-                <div style="max-height: 400px; overflow-y: auto; border: 1px solid #e0e0e0; border-radius: 0.25rem;">
-                    <table class="ui very basic table" style="width: 100%; margin: 0; font-size: 0.9rem;">
-                        <thead style="background: #f5f5f5;">
-                            <tr>
-                                <th style="width: 35%; padding: 0.75rem; font-size: 0.85rem;">Field Name</th>
-                                <th style="width: 45%; padding: 0.75rem; font-size: 0.85rem;">Value</th>
-                                <th style="width: 20%; padding: 0.75rem; font-size: 0.85rem;">Type</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${fieldRows}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
+function fieldDisplayName(fieldName, fieldData) {
+    if (!fieldData.id) return fieldName;
+    return fieldData.id
+        .replace(/^__component[\d-]+---/, '')
+        .replace(/^.*--/, '')
+        .replace(/-CB$/, '')
+        .replace(/-RB$/, '')
+        .replace(/-inner$/, '')
+        .replace(/-hiddenInput$/, '')
+        .replace(/^(inp|chb|rb|cmb|txt|sel)(?=[A-Z])/, '')
+        .replace(/([a-z\d])([A-Z])/g, '$1 $2')
+        .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+        .trim() || fieldName;
+}
+
+function fieldDisplayValue(displayName, fieldData) {
+    if (fieldData.type === 'checkbox') return fieldData.value === 'on' ? 'Yes' : 'No';
+    if (fieldData.type === 'password' || /password|secret/i.test(displayName)) return '••••••••';
+    if (fieldData.value === '' || fieldData.value == null) return null;
+    const value = String(fieldData.value);
+    return value.length > 80 ? `${value.slice(0, 80)}…` : value;
+}
+
+// back: dialog to return to (Load or Manage)
+function showProfileDetails(profile, back = showManageDialog) {
+    const fields = Object.entries(profile.data?.fields || {})
+        .map(([name, data]) => ({ name: fieldDisplayName(name, data), data }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+
+    const rows = fields.map(({ name, data }) => {
+        const value = fieldDisplayValue(name, data);
+        return `
+            <tr>
+                <td>${escapeHtml(name)}</td>
+                <td class="cpihConn-value">${value === null ? '<span class="cpihConn-muted">empty</span>' : escapeHtml(value)}</td>
+                <td class="cpihConn-muted">${escapeHtml(data.type || '')}</td>
+            </tr>
         `;
-        
-        const html = createDialogHTML(`Profile: ${profile.name}`, 'eye', content);
-        
-        // Create wrapper with button handlers
-        const wrapper = document.createElement('div');
-        wrapper.innerHTML = html;
-        
-        // Show dialog first
-        showBigPopup(wrapper, 'Profile Details');
-        
-        // Add custom buttons to the modal footer
-        setTimeout(() => {
-            // Find the modal footer
-            const modalFooter = document.querySelector('#cpiHelper_semanticui_modal .actions');
-            if (modalFooter) {
-                // Clear existing buttons and add our own
-                modalFooter.innerHTML = `
-                    <button class="ui button" id="profileDetailsBackBtn">
-                        <i class="arrow left icon"></i> Back to Manage
-                    </button>
-                    <button class="ui primary button" id="profileDetailsCloseBtn">
-                        Close
-                    </button>
-                `;
-                
-                // Add event listeners
-                document.getElementById('profileDetailsBackBtn')?.addEventListener('click', () => {
-                    cpihModal.hide('#cpiHelper_semanticui_modal');
-                    setTimeout(showManageDialog, 300);
-                });
-                
-                document.getElementById('profileDetailsCloseBtn')?.addEventListener('click', () => {
-                    cpihModal.hide('#cpiHelper_semanticui_modal');
-                });
-            }
-        }, 100);
-    } else {
-        // Fallback to alert
-        let message = `Profile: ${profile.name}\n`;
-        message += `Type: ${profile.type}\n`;
-        message += `Fields: ${Object.keys(profile.data.fields).length}\n`;
-        message += `Updated: ${new Date(profile.updated).toLocaleString()}\n\n`;
-        message += 'Field Values:\n';
-        
-        Object.entries(profile.data.fields).forEach(([name, field]) => {
-            let value = field.value;
-            if (field.type === 'password' || name.toLowerCase().includes('password')) {
-                value = '••••••••';
-            } else if (value.length > 30) {
-                value = value.substring(0, 30) + '...';
-            }
-            message += `  ${name}: ${value}\n`;
-        });
-        
-        alert(message);
-    }
+    }).join('');
+
+    const body = `
+        <div class="cpihConn-facts">
+            <div><span>Type</span><strong>${escapeHtml(profile.type)}</strong></div>
+            <div><span>Fields</span><strong>${fields.length}</strong></div>
+            <div><span>Created</span><strong>${escapeHtml(formatProfileDate(profile.created))}</strong></div>
+            <div><span>Updated</span><strong>${escapeHtml(formatProfileDate(profile.updated))}</strong></div>
+        </div>
+        <table class="ui very basic compact table cpihConn-table">
+            <thead><tr><th>Field</th><th>Value</th><th>Type</th></tr></thead>
+            <tbody>${rows}</tbody>
+        </table>
+    `;
+
+    openConnectivityDialog({
+        title: profile.name,
+        body,
+        size: 'small',
+        buttons: [
+            { text: 'Back', icon: 'arrow left', onClick: () => back() },
+            { text: 'Close', primary: true }
+        ]
+    });
 }
 
 async function showManageDialog() {
     const profiles = await getStoredProfiles();
-    
+
     if (profiles.length === 0) {
-        showNotification('No profiles', 'No saved profiles to manage', 'info');
+        showNotification('No profiles yet', 'There are no saved profiles to manage', 'info');
+        closeConnectivityDialog();
         return;
     }
-    
-    if (typeof showBigPopup === 'function' && typeof createElementFromHTML === 'function') {
-        let html = `
-            <div class="ui form">
-                <h3 class="ui header">
-                    <i class="settings icon"></i>
-                    Manage Profiles
-                </h3>
-                <p>${profiles.length} saved profile${profiles.length !== 1 ? 's' : ''}</p>
-                <div class="ui relaxed divided list">
-        `;
-        
-        profiles.forEach(profile => {
-            html += `
-                <div class="item">
-                    <div class="right floated content">
-                        <button class="ui small button view-profile-btn" data-profile-name="${profile.name}">
-                            <i class="eye icon"></i> View
-                        </button>
-                        <button class="ui small red button delete-profile-btn" data-profile-name="${profile.name}">
-                            <i class="trash icon"></i> Delete
-                        </button>
-                    </div>
-                    <i class="file icon"></i>
-                    <div class="content">
-                        <div class="header">${profile.name}</div>
-                        <div class="description">
-                            Type: ${profile.type} • 
-                            Fields: ${Object.keys(profile.data.fields).length} • 
-                            Updated: ${new Date(profile.updated).toLocaleDateString()}
-                        </div>
-                    </div>
-                </div>
-            `;
+
+    const sorted = [...profiles].sort((a, b) => a.type.localeCompare(b.type) || a.name.localeCompare(b.name));
+    const actions = (p) => `
+        <button type="button" class="ui tertiary button cpihConn-view" data-profile-name="${escapeHtml(p.name)}"><i class="eye icon"></i>View</button>
+        <button type="button" class="ui tertiary button cpihConn-delete" data-profile-name="${escapeHtml(p.name)}"><i class="trash icon"></i>Delete</button>
+    `;
+    const body = `
+        <div class="cpihConn-section-title">${pluralize(profiles.length, 'saved profile')}</div>
+        <div class="cpihConn-list">${sorted.map((p) => profileRowHTML(p, { showType: true, actions: actions(p) })).join('')}</div>
+    `;
+
+    const modal = await openConnectivityDialog({ title: 'Manage connectivity profiles', body, size: 'small', buttons: [{ text: 'Close', primary: true }] });
+    if (!modal) return;
+
+    const byName = (name) => profiles.find((p) => p.name === name);
+    modal.querySelectorAll('.cpihConn-view').forEach((button) => {
+        button.addEventListener('click', () => {
+            const profile = byName(button.dataset.profileName);
+            if (profile) showProfileDetails(profile, showManageDialog);
         });
-        
-        html += `
-                </div>
-            </div>
-        `;
-        
-        showBigPopup(createElementFromHTML(html), 'Manage Profiles');
-        
-        // Add event listeners after dialog is shown
-        setTimeout(() => {
-            // View button handlers
-            document.querySelectorAll('.view-profile-btn').forEach(btn => {
-                btn.addEventListener('click', async function() {
-                    const profileName = this.getAttribute('data-profile-name');
-                    const profile = profiles.find(p => p.name === profileName);
-                    if (profile) {
-                        showProfileDetails(profile);
-                    }
-                });
+    });
+    modal.querySelectorAll('.cpihConn-delete').forEach((button) => {
+        button.addEventListener('click', async () => {
+            const profileName = button.dataset.profileName;
+            const confirmed = await cpihConfirm({
+                title: 'Delete profile?',
+                content: `<p>"${escapeHtml(profileName)}" will be removed from this browser. This cannot be undone.</p>`,
+                approveText: 'Delete',
+                denyText: 'Cancel'
             });
-            
-            // Delete button handlers
-            document.querySelectorAll('.delete-profile-btn').forEach(btn => {
-                btn.addEventListener('click', async function() {
-                    const profileName = this.getAttribute('data-profile-name');
-                    if (confirm(`Delete profile "${profileName}"?`)) {
-                        const deleted = await deleteProfileFromStorage(profileName);
-                        if (deleted) {
-                            showNotification('Profile deleted', `"${profileName}" deleted`, 'success');
-                            cpihModal.hide('#cpiHelper_semanticui_modal');
-                            // Refresh the dialog
-                            setTimeout(showManageDialog, 500);
-                        }
-                    }
-                });
-            });
-        }, 100);
-    } else {
-        // Fallback to simple list
-        let message = 'Saved profiles:\n\n';
-        profiles.forEach((p, i) => {
-            message += `${i + 1}. ${p.name} (${p.type})\n`;
-        });
-        message += '\nEnter number to delete (or cancel):';
-        
-        const selection = prompt(message);
-        if (selection) {
-            const index = parseInt(selection) - 1;
-            if (index >= 0 && index < profiles.length) {
-                const profile = profiles[index];
-                if (confirm(`Delete profile "${profile.name}"?`)) {
-                    deleteProfileFromStorage(profile.name).then(deleted => {
-                        if (deleted) {
-                            showNotification('Profile deleted', `"${profile.name}" deleted`, 'success');
-                        }
-                    });
-                }
+            if (!confirmed) return;
+            if (await deleteProfileFromStorage(profileName)) {
+                showNotification('Profile deleted', `"${profileName}" deleted`, 'success');
+                showManageDialog();
+            } else {
+                showNotification('Delete failed', 'Could not delete the profile', 'error');
             }
-        }
-    }
+        });
+    });
 }
 
 // Initialize function
