@@ -37,8 +37,11 @@ function isConnectivityPage() {
     return window.location.href.includes('/shell/monitoring/Connectivity');
 }
 
+// The page has more tab lists (e.g. a carousel with an empty selected tab): only look inside the
+// Connectivity page and take the first selected tab that has a label
 function getCurrentTabType() {
-    const activeTab = document.querySelector('[role="tab"][aria-selected="true"]');
+    const page = document.querySelector('[id$="Connectivity--PageConnectivity"]') || document;
+    const activeTab = [...page.querySelectorAll('[role="tab"][aria-selected="true"]')].find((tab) => tab.textContent.trim());
     return activeTab ? activeTab.textContent.trim() : 'UNKNOWN';
 }
 
@@ -213,9 +216,6 @@ function extractFormData() {
     
     return formData;
 }
-
-// Redirect old multi-phase approach to sequential for backward compatibility
-window.fillFormFieldsMultiPhase = (profileData) => window.fillFormFieldsSequential(profileData);
 
 // ============================================================================
 // NEW SEQUENTIAL APPROACH - Fills fields one by one from top to bottom
@@ -419,23 +419,40 @@ function ensureConnectivityBridge() {
     return connectivityBridgeReady;
 }
 
-async function setSelectKeyViaUi5(controlId, key, timeout = 1500) {
-    if (!(await ensureConnectivityBridge())) return false;
+// Sends one request to the bridge, resolves with its reply or null (no bridge, timeout)
+async function callConnectivityBridge(type, payload, timeout = 1500) {
+    if (!(await ensureConnectivityBridge())) return null;
     const requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     return new Promise((resolve) => {
         const onMessage = (event) => {
             if (event.source !== window || event.data?.source !== 'cpih-conn-reply' || event.data.requestId !== requestId) return;
             window.removeEventListener('message', onMessage);
             clearTimeout(timer);
-            resolve(event.data.ok === true && event.data.key === key);
+            resolve(event.data);
         };
         const timer = setTimeout(() => {
             window.removeEventListener('message', onMessage);
-            resolve(false);
+            resolve(null);
         }, timeout);
         window.addEventListener('message', onMessage);
-        window.postMessage({ source: 'cpih-conn', type: 'setSelectKey', requestId, id: controlId, key }, window.location.origin);
+        window.postMessage({ source: 'cpih-conn', type, requestId, ...payload }, window.location.origin);
     });
+}
+
+async function setSelectKeyViaUi5(controlId, key) {
+    const reply = await callConnectivityBridge('setSelectKey', { id: controlId, key });
+    return reply?.ok === true && reply.key === key;
+}
+
+// The hidden input of a sap.m.Select can lag behind a selection made by keyboard: save the key the control
+// itself reports. Falls back to what extractFormData read when the bridge does not answer.
+async function readSelectKeysViaUi5(formData) {
+    for (const field of Object.values(formData.fields)) {
+        if (!field.id?.endsWith('-hiddenInput')) continue;
+        const reply = await callConnectivityBridge('getSelectKey', { id: field.id.slice(0, -'-hiddenInput'.length) });
+        if (reply?.ok && reply.key) field.value = reply.key;
+    }
+    return formData;
 }
 
 // Fill SAP UI5 select dropdown
@@ -791,17 +808,6 @@ async function fillProfileFields(profileData, onProgress = null) {
     return filledCount;
 }
 
-window.fillFormFieldsSequential = (profileData) => fillProfileFields(profileData);
-
-// Keep backward compatibility - redirect to sequential method
-window.fillFormFields = window.fillFormFieldsSequential;
-
-// Enhanced version with progress indicator
-window.fillFormFieldsWithProgress = (profileData) =>
-    fillProfileFields(profileData, (current, total) => {
-        updateBusyIndicator(`Processing field ${current}/${total}`, Math.round((current / total) * 100));
-    });
-
 // Storage functions
 async function getStoredProfiles() {
     const storageKey = 'connectivityCredentialsManager---profiles';
@@ -838,8 +844,12 @@ async function saveProfileToStorage(profileName, data) {
         profiles.push(profile);
     }
     
+    return writeStoredProfiles(profiles);
+}
+
+function writeStoredProfiles(profiles) {
     return new Promise(resolve => {
-        chrome.storage.local.set({ [storageKey]: profiles }, () => {
+        chrome.storage.local.set({ 'connectivityCredentialsManager---profiles': profiles }, () => {
             if (chrome.runtime.lastError) {
                 console.error('Save error:', chrome.runtime.lastError);
                 resolve(false);
@@ -851,15 +861,111 @@ async function saveProfileToStorage(profileName, data) {
 }
 
 async function deleteProfileFromStorage(profileName) {
-    const storageKey = 'connectivityCredentialsManager---profiles';
     const profiles = await getStoredProfiles();
-    const filtered = profiles.filter(p => p.name !== profileName);
-    
-    return new Promise(resolve => {
-        chrome.storage.local.set({ [storageKey]: filtered }, () => {
-            resolve(!chrome.runtime.lastError);
-        });
+    return writeStoredProfiles(profiles.filter(p => p.name !== profileName));
+}
+
+// ---------------------------------------------------------------- export / import
+// File: { format: 'cpih-connectivity-profiles', version: 1, exported, profiles: [...] } with the stored profiles as they are,
+// minus password fields: the file is meant to be passed around. A bare array of profiles is accepted on import too.
+const CPIH_CONN_EXPORT_FORMAT = 'cpih-connectivity-profiles';
+
+function isPasswordField(fieldName, fieldData) {
+    return fieldData?.type === 'password' || /password|secret/i.test(fieldDisplayName(fieldName, fieldData || {}));
+}
+
+function withoutPasswords(profile) {
+    const fields = Object.fromEntries(Object.entries(profile.data?.fields || {}).filter(([name, data]) => !isPasswordField(name, data)));
+    return { ...profile, data: { ...profile.data, fields } };
+}
+
+async function exportProfiles() {
+    const profiles = await getStoredProfiles();
+    const exported = profiles.map(withoutPasswords);
+    const removed = profiles.reduce((sum, p, i) => sum + profileFieldCount(p) - profileFieldCount(exported[i]), 0);
+    const file = { format: CPIH_CONN_EXPORT_FORMAT, version: 1, exported: new Date().toISOString(), profiles: exported };
+
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(new Blob([JSON.stringify(file, null, 2)], { type: 'application/json' }));
+    link.download = `connectivity-profiles-${new Date().toISOString().slice(0, 10)}.json`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+
+    showNotification('Profiles exported', `${pluralize(exported.length, 'profile')} exported` +
+        (removed ? `, ${pluralize(removed, 'password field')} left out` : ''), 'success');
+}
+
+function isValidProfile(profile) {
+    return typeof profile?.name === 'string' && profile.name.trim() !== '' &&
+        typeof profile.type === 'string' &&
+        profile.data && typeof profile.data.fields === 'object' && !Array.isArray(profile.data.fields);
+}
+
+function pickJsonFile() {
+    return new Promise((resolve) => {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.json,application/json';
+        input.addEventListener('change', () => resolve(input.files[0] || null));
+        input.click();
     });
+}
+
+// Profiles with the name of an existing one replace it, after a confirmation. Returns true when something was imported.
+async function importProfiles() {
+    const file = await pickJsonFile();
+    if (!file) return false;
+
+    let incoming;
+    try {
+        const parsed = JSON.parse(await file.text());
+        incoming = Array.isArray(parsed) ? parsed : parsed?.format === CPIH_CONN_EXPORT_FORMAT ? parsed.profiles : null;
+    } catch (error) {
+        incoming = null;
+    }
+    if (!Array.isArray(incoming)) {
+        showNotification('Import failed', `${file.name} is not a connectivity profiles export`, 'error');
+        return false;
+    }
+    const valid = incoming.filter(isValidProfile);
+    if (valid.length === 0) {
+        showNotification('Nothing imported', `${file.name} contains no valid profile`, 'warning');
+        return false;
+    }
+
+    const profiles = await getStoredProfiles();
+    const replaced = valid.filter((p) => profiles.some((existing) => existing.name === p.name));
+    if (replaced.length) {
+        const confirmed = await cpihConfirm({
+            title: 'Replace existing profiles?',
+            content: `<p>${escapeHtml(pluralize(replaced.length, 'profile'))} of the file already exist here and will be replaced:</p>
+                <p>${replaced.map((p) => `"${escapeHtml(p.name)}"`).join(', ')}</p>
+                <p>Passwords saved here are kept.</p>`,
+            approveText: 'Import and replace',
+            denyText: 'Cancel'
+        });
+        if (!confirmed) return false;
+    }
+
+    const now = new Date().toISOString();
+    for (const p of valid) {
+        const index = profiles.findIndex((existing) => existing.name === p.name);
+        // exports carry no passwords: a replaced profile keeps the ones it has here
+        const keptPasswords = index >= 0 ? Object.fromEntries(Object.entries(profiles[index].data?.fields || {})
+            .filter(([name, data]) => isPasswordField(name, data) && !(name in p.data.fields))) : {};
+        const data = { ...p.data, fields: { ...keptPasswords, ...p.data.fields } };
+        const profile = { name: p.name, type: p.type, data, created: p.created || now, updated: p.updated || now };
+        if (index >= 0) profiles[index] = profile;
+        else profiles.push(profile);
+    }
+    if (!(await writeStoredProfiles(profiles))) {
+        showNotification('Import failed', 'Could not save the profiles', 'error');
+        return false;
+    }
+    const skipped = incoming.length - valid.length;
+    showNotification('Profiles imported', `${pluralize(valid.length, 'profile')} imported` +
+        (skipped ? `, ${skipped} invalid ${skipped === 1 ? 'entry' : 'entries'} skipped` : ''), 'success');
+    return true;
 }
 
 // ============================================================================
@@ -948,7 +1054,9 @@ async function loadProfileIntoForm(profile) {
     showBusyIndicator(profile.name);
     let filledCount = 0;
     try {
-        filledCount = await window.fillFormFieldsWithProgress(profile.data);
+        filledCount = await fillProfileFields(profile.data, (current, total) => {
+            updateBusyIndicator(`Processing field ${current}/${total}`, Math.round((current / total) * 100));
+        });
     } finally {
         hideBusyIndicator();
     }
@@ -1047,7 +1155,7 @@ async function fillProfilesPanel(container) {
             showNotification('Name missing', 'Enter a name for the profile', 'error');
             return;
         }
-        const formData = extractFormData();
+        const formData = await readSelectKeysViaUi5(extractFormData());
         const fieldCount = Object.keys(formData.fields).length;
         if (fieldCount === 0) {
             showNotification('Nothing to save', 'Fill in some fields of the form first', 'warning');
@@ -1123,7 +1231,7 @@ function showHelpDialog() {
                 <i class="settings icon"></i>
                 <div class="content">
                     <div class="header">Manage</div>
-                    <div class="description">All profiles of all tabs, with their values, and delete.</div>
+                    <div class="description">All profiles of all tabs, with their values, and delete. Export saves them to a JSON file (without passwords) to share or keep as a backup, Import reads such a file.</div>
                 </div>
             </div>
             <div class="item">
@@ -1224,24 +1332,21 @@ function showProfileDetails(profile, back = null) {
 
 async function showManageDialog() {
     const profiles = await getStoredProfiles();
-
-    if (profiles.length === 0) {
-        showNotification('No profiles yet', 'There are no saved profiles to manage', 'info');
-        cpihModal.hide(CPIH_CONN_MODAL);
-        return;
-    }
-
     const sorted = [...profiles].sort((a, b) => a.type.localeCompare(b.type) || a.name.localeCompare(b.name));
     const actions = (p) => `
         <button type="button" class="ui tertiary button cpihConn-view" data-profile-name="${escapeHtml(p.name)}"><i class="eye icon"></i>View</button>
         <button type="button" class="ui tertiary button cpihConn-delete" data-profile-name="${escapeHtml(p.name)}"><i class="trash icon"></i>Delete</button>
     `;
-    const body = `
+    const body = profiles.length ? `
         <div class="cpihConn-section-title">${pluralize(profiles.length, 'saved profile')}</div>
         <div class="cpihConn-list">${sorted.map((p) => profileRowHTML(p, actions(p))).join('')}</div>
-    `;
+    ` : `<p class="cpihConn-muted">No saved profiles yet. Save one from the Connectivity profiles panel or import an export file.</p>`;
 
-    const modal = await openConnectivityDialog({ title: 'Manage connectivity profiles', body, size: 'small', buttons: [{ text: 'Close', primary: true }] });
+    const buttons = [{ text: 'Import', icon: 'folder open', onClick: async () => { if (await importProfiles()) showManageDialog(); } }];
+    if (profiles.length) buttons.push({ text: 'Export', icon: 'download', onClick: () => exportProfiles() });
+    buttons.push({ text: 'Close', primary: true });
+
+    const modal = await openConnectivityDialog({ title: 'Manage connectivity profiles', body, size: 'small', buttons });
     if (!modal) return;
 
     const byName = (name) => profiles.find((p) => p.name === name);
