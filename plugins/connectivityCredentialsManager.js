@@ -9,20 +9,30 @@ var plugin = {
     description: "Profile manager for SAP CPI connectivity tests - save, load, and manage connection configurations",
 
     settings: {
-        info: { 
-            text: "This plugin automatically activates on the Connectivity Test page (Monitoring → Connectivity Test)", 
-            type: "label" 
+        info: {
+            text: "Adds a Connectivity profiles button to the CPI Helper toolbar on the Connectivity Test page (Monitoring → Test Connectivity)",
+            type: "label"
         }
+    },
+
+    // panel in the floating toolbar, also on the global toolbar of the Monitoring pages, only on Test Connectivity
+    messageSidebarContent: {
+        globalToolbar: true,
+        static: false,
+        title: "Connectivity profiles",
+        icon: { type: "icon", text: "xe20b" }, // SAP-icons "connected"
+        condition: () => isConnectivityPage(),
+        onRender: () => renderProfilesPanel()
     }
 };
 
-// Global state for the plugin
-var connectivityCredentialsState = {
-    initialized: false,
-    observer: null
-};
-
 // Helper functions
+// CPI Helper's own UI (floating toolbar with this plugin's panel, modals, toasts) is on the same page as the
+// form: its inputs must never be saved into a profile or filled
+function isCpiHelperElement(element) {
+    return !!element.closest('#cpiHelper_floatingToolbar, #cpihelperglobal, .cpiHelper, .cpiHelper_toast_container');
+}
+
 function isConnectivityPage() {
     return window.location.href.includes('/shell/monitoring/Connectivity');
 }
@@ -50,6 +60,7 @@ function extractFormData() {
         const allInputs = document.querySelectorAll('input:not([type="hidden"]), input[id$="-hiddenInput"], select, textarea');
         
         allInputs.forEach(input => {
+            if (isCpiHelperElement(input)) return;
             // Skip if not visible or (empty and not a checkbox)
             // Exception: allow hidden inputs that are part of SAP selects
             if (!input.offsetParent && !input.id?.endsWith('-hiddenInput')) return;
@@ -128,6 +139,7 @@ function extractFormData() {
         const inputs = activePanel.querySelectorAll('input:not([type="hidden"]), input[id$="-hiddenInput"], select, textarea');
         
         inputs.forEach(input => {
+            if (isCpiHelperElement(input)) return;
             // Skip if not visible or (empty and not a checkbox)
             // Exception: allow hidden inputs that are part of SAP selects
             if (!input.offsetParent && !input.id?.endsWith('-hiddenInput')) return;
@@ -231,6 +243,7 @@ function getAllVisibleFormElements() {
     
     const elements = document.querySelectorAll(selectors.join(','));
     return Array.from(elements).filter(el => {
+        if (isCpiHelperElement(el)) return false;
         // Visible element (but allow hidden inputs for SAP selects)
         if (!el.offsetParent && !el.id.endsWith('-hiddenInput')) return false;
         
@@ -847,20 +860,13 @@ async function deleteProfileFromStorage(profileName) {
 }
 
 // ============================================================================
-// UI - header buttons use the SAP sap.m.Button markup so the tenant theme styles them (Horizon, dark mode,
-// hover, focus). Dialogs use the CPI Helper 4 UI kit (showBigPopup / cpihModal / cpihConfirm / ui.css), the
-// plugin specific look lives in css/plugin.css under ".cpihConn".
+// UI - lives in the CPI Helper floating toolbar: on the Connectivity Test page the toolbar gets a
+// "Connectivity profiles" button (messageSidebarContent.globalToolbar + condition), its panel lists the
+// profiles of the open tab and saves the form. Details, Manage and Help open as CPI Helper modals.
+// Look: Recent panel of the toolbar and the UI kit (ui.css), plugin specifics in css/plugin.css (.cpihConn).
 // ============================================================================
 
 const CPIH_CONN_MODAL = '#cpiHelper_semanticui_modal';
-
-// SAP-icons glyphs (sap/ui/core/IconPool)
-const CPIH_CONN_ICONS = {
-    save: '',
-    load: '',
-    manage: '',
-    help: ''
-};
 
 function escapeHtml(value) {
     return String(value ?? '')
@@ -885,7 +891,23 @@ function pluralize(count, word) {
     return `${count} ${word}${count === 1 ? '' : 's'}`;
 }
 
-// Busy indicator while a profile is filled into the form (the fill is sequential and can take a few seconds)
+function showNotification(title, message, type = 'info') {
+    if (typeof showToast === 'function') {
+        // CPI Helper signature is showToast(message, title, type). The toast renders HTML, profile names are text
+        showToast(escapeHtml(message), escapeHtml(title), type);
+    } else {
+        console.log(`[Connectivity Manager] ${title}: ${message}`);
+    }
+}
+
+function closeToolbarPanel() {
+    if (typeof getFloatingToolbar === 'function' && typeof closeFloatingToolbarMenu === 'function') {
+        const toolbar = getFloatingToolbar();
+        if (toolbar) closeFloatingToolbarMenu(toolbar);
+    }
+}
+
+// Busy indicator while a profile is filled in (the fill is sequential and can take a few seconds)
 function showBusyIndicator(profileName) {
     hideBusyIndicator();
 
@@ -917,122 +939,146 @@ function hideBusyIndicator() {
     document.getElementById('cpiConnectivityBusyOverlay')?.remove();
 }
 
-// A transparent sap.m.Button, optionally with an SAP icon. Same DOM as UI5 renders, so the page CSS styles it.
-function createButton(text, title, onClick, icon = null) {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'sapMBtnBase sapMBtn cpihConn-headerBtn';
-    button.title = title;
-    button.setAttribute('aria-label', title);
-
-    const inner = document.createElement('span');
-    inner.className = 'sapMBtnInner sapMBtnHoverable sapMFocusable sapMBtnTransparent';
-
-    if (icon) {
-        inner.classList.add('sapMBtnIconFirst');
-        const iconEl = document.createElement('span');
-        iconEl.className = 'sapUiIcon sapUiIconMirrorInRTL sapMBtnIcon sapMBtnIconLeft';
-        iconEl.setAttribute('data-sap-ui-icon-content', icon);
-        iconEl.setAttribute('aria-hidden', 'true');
-        iconEl.style.fontFamily = "'SAP-icons'";
-        inner.appendChild(iconEl);
+async function loadProfileIntoForm(profile) {
+    closeToolbarPanel();
+    cpihModal.hide(CPIH_CONN_MODAL);
+    showBusyIndicator(profile.name);
+    let filledCount = 0;
+    try {
+        filledCount = await window.fillFormFieldsWithProgress(profile.data);
+    } finally {
+        hideBusyIndicator();
     }
-
-    if (text) {
-        inner.classList.add('sapMBtnText');
-        const content = document.createElement('span');
-        content.className = 'sapMBtnContent';
-        const bdi = document.createElement('bdi');
-        bdi.textContent = text;
-        content.appendChild(bdi);
-        inner.appendChild(content);
-    }
-
-    button.appendChild(inner);
-    button.addEventListener('click', onClick);
-    return button;
-}
-
-function showNotification(title, message, type = 'info') {
-    if (typeof showToast === 'function') {
-        // CPI Helper signature is showToast(message, title, type)
-        showToast(message, title, type);
+    if (filledCount > 0) {
+        showNotification('Profile loaded', `${pluralize(filledCount, 'field')} filled from "${profile.name}"`, 'success');
     } else {
-        console.log(`[Connectivity Manager] ${title}: ${message}`);
+        showNotification('Nothing filled', 'No field of the form matched the profile', 'warning');
     }
 }
 
-// Header of the Connectivity Test page. Older tenants render a sap.m.Page with the plain id
-// "PageConnectivity"; newer ones render a sap.f.DynamicPage whose id carries the view prefix
-// ("__component0---...Connectivity--PageConnectivity") and whose header is "<id>-header".
-function findConnectivityHeader() {
-    return document.querySelector('#PageConnectivity > header.sapMPageHeader')
-        || document.querySelector('[id$="--PageConnectivity-header"].sapFDynamicPageTitleWrapper');
+// ---------------------------------------------------------------- toolbar panel
+
+// messageSidebarContent.onRender: the panel content, rendered again on every open
+async function renderProfilesPanel() {
+    if (!isConnectivityPage()) return null;
+    const container = document.createElement('div');
+    container.className = 'cpihConn-panel';
+    await fillProfilesPanel(container);
+    return container;
 }
 
-function createUI() {
-    if (document.querySelector('#cpiConnectivityControls')) return;
+async function fillProfilesPanel(container) {
+    const profiles = await getStoredProfiles();
+    const currentTab = getCurrentTabType();
+    const matching = profiles.filter((p) => p.type === currentTab).sort((a, b) => a.name.localeCompare(b.name));
+    const otherCount = profiles.length - matching.length;
 
-    const header = findConnectivityHeader();
-    if (!header) {
-        console.log('[Connectivity Manager] Header not found, retrying...');
-        return;
-    }
+    const rows = matching.map((p) => `
+        <li>
+            <div class="cpiHelper_recent_item cpihConn-panelRow" role="button" tabindex="0" data-profile-name="${escapeHtml(p.name)}" title="Fill the form with this profile">
+                <span class="cpihConn-panelText">
+                    <span class="cpiHelper_recent_name">${escapeHtml(p.name)}</span>
+                    <span class="cpiHelper_recent_type">${pluralize(profileFieldCount(p), 'field')} · ${escapeHtml(formatProfileDate(p.updated))}</span>
+                </span>
+                <span class="cpihConn-panelView" role="button" tabindex="0" title="Show values" aria-label="Show values of ${escapeHtml(p.name)}"><i class="eye icon"></i></span>
+            </div>
+        </li>
+    `).join('');
 
-    // sap.f.DynamicPage: the title's main actions area (empty on this page), right aligned
-    let target = header.querySelector('.sapFDynamicPageTitleMainActions');
-    let pushRight = false;
-    if (target) {
-        target.classList.add('cpihConn-actionsHost');
-    } else {
-        // sap.m.Page header bar (older tenants)
-        target = header.querySelector('.sapMBarRight');
-        if (!target) {
-            const barMiddle = header.querySelector('.sapMBarMiddle');
-            if (barMiddle?.parentNode) {
-                target = document.createElement('div');
-                target.className = 'sapMBarRight sapMBarContainer';
-                barMiddle.parentNode.appendChild(target);
+    container.innerHTML = `
+        <div class="cpiHelper_recent_heading">${escapeHtml(currentTab)} tab</div>
+        ${matching.length
+            ? `<ul class="cpiHelper_recent_list">${rows}</ul>`
+            : `<p class="cpihConn-panelEmpty">No profile for ${escapeHtml(currentTab)} yet. Fill in the form and save it below.</p>`}
+        ${otherCount ? `<p class="cpihConn-panelOther">${pluralize(otherCount, 'profile')} for other connection types, open their tab to load them.</p>` : ''}
+        <div class="cpiHelper_recent_heading">Save the form</div>
+        <form class="ui form cpihConn-panelSave">
+            <input type="text" name="profileName" placeholder="Profile name, e.g. S/4 QA SFTP" autocomplete="off" maxlength="80" aria-label="Profile name">
+            <button type="submit" class="ui primary button">Save</button>
+        </form>
+        <div class="cpihConn-hint" hidden>Exists already, Save overwrites it.</div>
+        <div class="cpihConn-panelLinks">
+            <a href="#" data-action="manage">Manage profiles</a>
+            <a href="#" data-action="help">Help</a>
+        </div>
+    `;
+
+    const byName = (name) => profiles.find((p) => p.name === name);
+    container.querySelectorAll('.cpihConn-panelRow').forEach((row) => {
+        const load = () => {
+            const profile = byName(row.dataset.profileName);
+            if (profile) loadProfileIntoForm(profile);
+        };
+        row.addEventListener('click', load);
+        row.addEventListener('keydown', (event) => {
+            if (event.target === row && (event.key === 'Enter' || event.key === ' ')) {
+                event.preventDefault();
+                load();
             }
+        });
+    });
+    container.querySelectorAll('.cpihConn-panelView').forEach((view) => {
+        const open = (event) => {
+            event.stopPropagation();
+            event.preventDefault();
+            const profile = byName(view.closest('.cpihConn-panelRow').dataset.profileName);
+            if (profile) showProfileDetails(profile);
+        };
+        view.addEventListener('click', open);
+        view.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' || event.key === ' ') open(event);
+        });
+    });
+
+    const form = container.querySelector('.cpihConn-panelSave');
+    const input = form.elements.profileName;
+    const hint = container.querySelector('.cpihConn-hint');
+    input.addEventListener('input', () => {
+        hint.hidden = !profiles.some((p) => p.name === input.value.trim());
+    });
+    form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const profileName = input.value.trim();
+        if (!profileName) {
+            input.focus();
+            showNotification('Name missing', 'Enter a name for the profile', 'error');
+            return;
         }
-        if (!target) {
-            target = header.querySelector('.sapMTB') || header.firstElementChild;
-            pushRight = !!target;
+        const formData = extractFormData();
+        const fieldCount = Object.keys(formData.fields).length;
+        if (fieldCount === 0) {
+            showNotification('Nothing to save', 'Fill in some fields of the form first', 'warning');
+            return;
         }
-    }
+        if (await saveProfileToStorage(profileName, formData)) {
+            showNotification('Profile saved', `"${profileName}" saved with ${pluralize(fieldCount, 'field')}`, 'success');
+            fillProfilesPanel(container);
+        } else {
+            showNotification('Save failed', 'Could not save the profile', 'error');
+        }
+    });
 
-    if (!target) {
-        console.log('[Connectivity Manager] Could not find a place for the controls');
-        return;
-    }
-
-    const controls = document.createElement('div');
-    controls.id = 'cpiConnectivityControls';
-    controls.className = 'cpihConn-controls';
-    controls.setAttribute('role', 'toolbar');
-    controls.setAttribute('aria-label', 'Connectivity profiles (CPI Helper)');
-    if (pushRight) controls.style.marginLeft = 'auto';
-
-    controls.append(
-        createButton('Save', 'Save the current form as a profile (CPI Helper)', showSaveDialog, CPIH_CONN_ICONS.save),
-        createButton('Load', 'Fill the form from a saved profile (CPI Helper)', showLoadDialog, CPIH_CONN_ICONS.load),
-        createButton('Manage', 'View or delete saved profiles (CPI Helper)', showManageDialog, CPIH_CONN_ICONS.manage),
-        createButton('', 'Help for connectivity profiles (CPI Helper)', showHelpDialog, CPIH_CONN_ICONS.help)
-    );
-
-    target.appendChild(controls);
-    console.log('[Connectivity Manager] UI created successfully');
+    container.querySelectorAll('.cpihConn-panelLinks a').forEach((link) => {
+        link.addEventListener('click', (event) => {
+            event.preventDefault();
+            closeToolbarPanel();
+            if (link.dataset.action === 'manage') showManageDialog();
+            else showHelpDialog();
+        });
+    });
 }
+
+// ---------------------------------------------------------------- modals
 
 // Opens the shared CPI Helper modal with our own footer.
-// buttons: [{ text, icon?, primary?, negative?, onClick(modal) }] - a button without onClick just closes.
+// buttons: [{ text, icon?, primary?, onClick(modal) }] - a button without onClick just closes.
 async function openConnectivityDialog({ title, body, buttons = [], size = 'small' }) {
-    const node = typeof body === 'string' ? createElementFromHTML(`<div class="cpihConn">${body}</div>`) : body;
+    const node = createElementFromHTML(`<div class="cpihConn">${body}</div>`);
     await showBigPopup(node, title, { fullscreen: false, closeText: 'Close' });
 
     const modal = document.querySelector(CPIH_CONN_MODAL);
     if (!modal) return null;
-    modal.classList.add(size, 'cpihConn-modal');
+    modal.classList.add(size);
     modal.querySelector('#cpiHelper_bigPopup_content_semanticui')?.style.removeProperty('min-height');
 
     const actions = modal.querySelector('.actions');
@@ -1040,17 +1086,13 @@ async function openConnectivityDialog({ title, body, buttons = [], size = 'small
         actions.replaceChildren(...buttons.map((spec) => {
             const button = document.createElement('button');
             button.type = 'button';
-            button.className = `ui button${spec.primary ? ' primary' : ''}${spec.negative ? ' negative' : ''}`;
+            button.className = `ui button${spec.primary ? ' primary' : ''}`;
             button.innerHTML = `${spec.icon ? `<i class="${spec.icon} icon"></i>` : ''}${escapeHtml(spec.text)}`;
             button.addEventListener('click', () => (spec.onClick ? spec.onClick(modal) : cpihModal.hide(modal)));
             return button;
         }));
     }
     return modal;
-}
-
-function closeConnectivityDialog() {
-    cpihModal.hide(CPIH_CONN_MODAL);
 }
 
 function showHelpDialog() {
@@ -1064,21 +1106,21 @@ function showHelpDialog() {
                 <i class="save outline icon"></i>
                 <div class="content">
                     <div class="header">Save</div>
-                    <div class="description">Fill in the form on a tab (TLS, SSH, FTP, ...), click Save and give the profile a name.</div>
+                    <div class="description">Fill in the form on a tab (TLS, SSH, FTP, ...), open Connectivity profiles in the CPI Helper toolbar, type a name and click Save.</div>
                 </div>
             </div>
             <div class="item">
                 <i class="folder open outline icon"></i>
                 <div class="content">
                     <div class="header">Load</div>
-                    <div class="description">Shows the profiles of the open tab. Click one to fill the form.</div>
+                    <div class="description">The panel lists the profiles of the open tab. Click one to fill the form, the eye shows its values.</div>
                 </div>
             </div>
             <div class="item">
                 <i class="settings icon"></i>
                 <div class="content">
                     <div class="header">Manage</div>
-                    <div class="description">See every profile with its values, or delete the ones you no longer need.</div>
+                    <div class="description">All profiles of all tabs, with their values, and delete.</div>
                 </div>
             </div>
             <div class="item">
@@ -1097,84 +1139,16 @@ function showHelpDialog() {
     openConnectivityDialog({ title: 'Connectivity profiles', body, size: 'tiny', buttons: [{ text: 'Got it', primary: true }] });
 }
 
-async function showSaveDialog() {
-    const formData = extractFormData();
-    const fieldCount = Object.keys(formData.fields).length;
-
-    if (fieldCount === 0) {
-        showNotification('Nothing to save', 'Fill in some fields of the form first', 'warning');
-        return;
-    }
-
-    const profiles = await getStoredProfiles();
-    const body = `
-        <div class="ui form">
-            <div class="cpihConn-summary">
-                <span class="ui label">${escapeHtml(formData.type)}</span>
-                <span>${pluralize(fieldCount, 'field')} from the form</span>
-            </div>
-            <div class="field">
-                <label for="profileNameInput">Profile name</label>
-                <input type="text" id="profileNameInput" placeholder="e.g. S/4 QA SFTP" autocomplete="off" maxlength="80">
-            </div>
-            <div class="cpihConn-hint" id="profileNameHint" hidden>A profile with this name exists and will be overwritten.</div>
-        </div>
-    `;
-
-    const save = async () => {
-        const input = document.getElementById('profileNameInput');
-        const profileName = input?.value.trim();
-        if (!profileName) {
-            input?.focus();
-            showNotification('Name missing', 'Enter a name for the profile', 'error');
-            return;
-        }
-        if (await saveProfileToStorage(profileName, formData)) {
-            showNotification('Profile saved', `"${profileName}" saved`, 'success');
-            closeConnectivityDialog();
-        } else {
-            showNotification('Save failed', 'Could not save the profile', 'error');
-        }
-    };
-
-    const modal = await openConnectivityDialog({
-        title: 'Save connectivity profile',
-        body,
-        size: 'tiny',
-        buttons: [
-            { text: 'Cancel' },
-            { text: 'Save', icon: 'save', primary: true, onClick: save }
-        ]
-    });
-    if (!modal) return;
-
-    const input = modal.querySelector('#profileNameInput');
-    const hint = modal.querySelector('#profileNameHint');
-    input.addEventListener('input', () => {
-        hint.hidden = !profiles.some((p) => p.name === input.value.trim());
-    });
-    input.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter') {
-            event.preventDefault();
-            save();
-        }
-    });
-    requestAnimationFrame(() => input.focus());
-}
-
-// One row of a profile list. actions: html of the buttons on the right.
-// loadable: click fills the form; muted: shown but not loadable here (other connection type)
-function profileRowHTML(profile, { loadable = false, muted = false, showType = false, actions = '' } = {}) {
+function profileRowHTML(profile, actions) {
     const meta = [
-        showType ? `<span class="ui label">${escapeHtml(profile.type)}</span>` : '',
+        `<span class="ui label">${escapeHtml(profile.type)}</span>`,
         pluralize(profileFieldCount(profile), 'field'),
         escapeHtml(formatProfileDate(profile.updated))
-    ].filter(Boolean).join('<span class="cpihConn-dot">·</span>');
+    ].join('<span class="cpihConn-dot">·</span>');
 
     return `
-        <div class="cpihConn-row${loadable ? ' cpihConn-row--loadable' : ''}${muted ? ' cpihConn-row--muted' : ''}" data-profile-name="${escapeHtml(profile.name)}"
-             ${loadable ? 'role="button" tabindex="0" title="Fill the form with this profile"' : ''}>
-            <i class="${loadable ? 'file' : 'file outline'} icon"></i>
+        <div class="cpihConn-row" data-profile-name="${escapeHtml(profile.name)}">
+            <i class="file outline icon"></i>
             <div class="cpihConn-row-main">
                 <div class="cpihConn-row-name">${escapeHtml(profile.name)}</div>
                 <div class="cpihConn-row-meta">${meta}</div>
@@ -1182,76 +1156,6 @@ function profileRowHTML(profile, { loadable = false, muted = false, showType = f
             <div class="cpihConn-row-actions">${actions}</div>
         </div>
     `;
-}
-
-function viewButtonHTML(profile) {
-    return `<button type="button" class="ui tertiary icon button cpihConn-view" data-profile-name="${escapeHtml(profile.name)}" title="Show values"><i class="eye icon"></i></button>`;
-}
-
-async function loadProfileIntoForm(profile) {
-    closeConnectivityDialog();
-    showBusyIndicator(profile.name);
-    let filledCount = 0;
-    try {
-        filledCount = await window.fillFormFieldsWithProgress(profile.data);
-    } finally {
-        hideBusyIndicator();
-    }
-    if (filledCount > 0) {
-        showNotification('Profile loaded', `${pluralize(filledCount, 'field')} filled from "${profile.name}"`, 'success');
-    } else {
-        showNotification('Nothing filled', 'No field of the form matched the profile', 'warning');
-    }
-}
-
-async function showLoadDialog() {
-    const profiles = await getStoredProfiles();
-    const currentTab = getCurrentTabType();
-
-    if (profiles.length === 0) {
-        showNotification('No profiles yet', 'Save the form as a profile first', 'info');
-        return;
-    }
-
-    const matching = profiles.filter((p) => p.type === currentTab);
-    const other = profiles.filter((p) => p.type !== currentTab);
-
-    let body = `<div class="cpihConn-section-title">${escapeHtml(currentTab)} profiles</div>`;
-    body += matching.length
-        ? `<div class="cpihConn-list">${matching.map((p) => profileRowHTML(p, { loadable: true, actions: viewButtonHTML(p) })).join('')}</div>`
-        : `<div class="ui info message"><i class="info circle icon"></i>No profile for ${escapeHtml(currentTab)} yet. Fill in the form and use Save.</div>`;
-
-    if (other.length) {
-        body += `
-            <div class="cpihConn-section-title">Other connection types <span class="cpihConn-muted">· switch to their tab to load them</span></div>
-            <div class="cpihConn-list">${other.map((p) => profileRowHTML(p, { muted: true, showType: true, actions: viewButtonHTML(p) })).join('')}</div>
-        `;
-    }
-
-    const modal = await openConnectivityDialog({ title: 'Load connectivity profile', body, size: 'small', buttons: [{ text: 'Close' }] });
-    if (!modal) return;
-
-    const byName = (name) => profiles.find((p) => p.name === name);
-    modal.querySelectorAll('.cpihConn-row--loadable').forEach((row) => {
-        const load = () => {
-            const profile = byName(row.dataset.profileName);
-            if (profile) loadProfileIntoForm(profile);
-        };
-        row.addEventListener('click', load);
-        row.addEventListener('keydown', (event) => {
-            if (event.key === 'Enter' || event.key === ' ') {
-                event.preventDefault();
-                load();
-            }
-        });
-    });
-    modal.querySelectorAll('.cpihConn-view').forEach((button) => {
-        button.addEventListener('click', (event) => {
-            event.stopPropagation();
-            const profile = byName(button.dataset.profileName);
-            if (profile) showProfileDetails(profile, showLoadDialog);
-        });
-    });
 }
 
 function fieldDisplayName(fieldName, fieldData) {
@@ -1277,8 +1181,8 @@ function fieldDisplayValue(displayName, fieldData) {
     return value.length > 80 ? `${value.slice(0, 80)}…` : value;
 }
 
-// back: dialog to return to (Load or Manage)
-function showProfileDetails(profile, back = showManageDialog) {
+// back: dialog to return to, e.g. Manage. Without it only Close.
+function showProfileDetails(profile, back = null) {
     const fields = Object.entries(profile.data?.fields || {})
         .map(([name, data]) => ({ name: fieldDisplayName(name, data), data }))
         .sort((a, b) => a.name.localeCompare(b.name));
@@ -1307,15 +1211,12 @@ function showProfileDetails(profile, back = showManageDialog) {
         </table>
     `;
 
-    openConnectivityDialog({
-        title: profile.name,
-        body,
-        size: 'small',
-        buttons: [
-            { text: 'Back', icon: 'arrow left', onClick: () => back() },
-            { text: 'Close', primary: true }
-        ]
-    });
+    const buttons = [];
+    if (back) buttons.push({ text: 'Back', icon: 'arrow left', onClick: () => back() });
+    if (profile.type === getCurrentTabType()) buttons.push({ text: 'Load into form', onClick: () => loadProfileIntoForm(profile) });
+    buttons.push({ text: 'Close', primary: true });
+
+    openConnectivityDialog({ title: profile.name, body, size: 'small', buttons });
 }
 
 async function showManageDialog() {
@@ -1323,7 +1224,7 @@ async function showManageDialog() {
 
     if (profiles.length === 0) {
         showNotification('No profiles yet', 'There are no saved profiles to manage', 'info');
-        closeConnectivityDialog();
+        cpihModal.hide(CPIH_CONN_MODAL);
         return;
     }
 
@@ -1334,7 +1235,7 @@ async function showManageDialog() {
     `;
     const body = `
         <div class="cpihConn-section-title">${pluralize(profiles.length, 'saved profile')}</div>
-        <div class="cpihConn-list">${sorted.map((p) => profileRowHTML(p, { showType: true, actions: actions(p) })).join('')}</div>
+        <div class="cpihConn-list">${sorted.map((p) => profileRowHTML(p, actions(p))).join('')}</div>
     `;
 
     const modal = await openConnectivityDialog({ title: 'Manage connectivity profiles', body, size: 'small', buttons: [{ text: 'Close', primary: true }] });
@@ -1365,91 +1266,6 @@ async function showManageDialog() {
             }
         });
     });
-}
-
-// Initialize function
-function initializePlugin() {
-    if (!isConnectivityPage()) return;
-    
-    if (connectivityCredentialsState.initialized) return;
-    
-    console.log('[Connectivity Manager] Initializing on connectivity page...');
-    
-    // Try to create UI
-    createUI();
-    
-    // If UI wasn't created, set up observer to wait for page load
-    if (!document.querySelector('#cpiConnectivityControls')) {
-        if (connectivityCredentialsState.observer) {
-            connectivityCredentialsState.observer.disconnect();
-        }
-        
-        connectivityCredentialsState.observer = new MutationObserver((mutations, observer) => {
-            if (findConnectivityHeader()) {
-                createUI();
-                if (document.querySelector('#cpiConnectivityControls')) {
-                    observer.disconnect();
-                    connectivityCredentialsState.initialized = true;
-                }
-            }
-        });
-        
-        connectivityCredentialsState.observer.observe(document.body, {
-            childList: true,
-            subtree: true
-        });
-        
-        // Also try periodically for 10 seconds
-        let attempts = 0;
-        const interval = setInterval(() => {
-            attempts++;
-            createUI();
-            if (document.querySelector('#cpiConnectivityControls') || attempts > 20) {
-                clearInterval(interval);
-                if (connectivityCredentialsState.observer) {
-                    connectivityCredentialsState.observer.disconnect();
-                }
-                connectivityCredentialsState.initialized = true;
-            }
-        }, 500);
-    } else {
-        connectivityCredentialsState.initialized = true;
-    }
-}
-
-// Check for page changes (SPA navigation)
-function checkForPageChange() {
-    const wasInitialized = connectivityCredentialsState.initialized;
-    const isNowConnectivityPage = isConnectivityPage();
-    
-    if (!wasInitialized && isNowConnectivityPage) {
-        // Navigated to connectivity page
-        initializePlugin();
-    } else if (wasInitialized && !isNowConnectivityPage) {
-        // Navigated away from connectivity page
-        connectivityCredentialsState.initialized = false;
-        if (connectivityCredentialsState.observer) {
-            connectivityCredentialsState.observer.disconnect();
-            connectivityCredentialsState.observer = null;
-        }
-    } else if (isNowConnectivityPage && !document.querySelector('#cpiConnectivityControls')) {
-        // Still on connectivity page but UI is missing
-        connectivityCredentialsState.initialized = false;
-        initializePlugin();
-    }
-}
-
-// Start monitoring
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => {
-        initializePlugin();
-        // Check for page changes every 2 seconds
-        setInterval(checkForPageChange, 2000);
-    });
-} else {
-    initializePlugin();
-    // Check for page changes every 2 seconds
-    setInterval(checkForPageChange, 2000);
 }
 
 // Register with CPI Helper

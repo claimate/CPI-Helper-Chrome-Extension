@@ -90,23 +90,110 @@ tr > td.yellow {
 }
 
 /* connectivityCredentialsManager (Connectivity Profile Manager) */
-/* header buttons are real sap.m.Button markup and get their look from the tenant theme, only spacing here */
-.cpihConn-actionsHost {
+/* toolbar panel: built on the Recent panel classes (cpiHelper_recent_*), only the extras here */
+.cpihConn-panel {
+  width: 300px;
+  max-width: 100%;
+}
+
+.cpihConn-panel .cpiHelper_recent_heading:first-child {
+  margin-top: 0;
+}
+
+.cpihConn-panel .cpiHelper_recent_heading:not(:first-child) {
+  margin-top: 12px;
+}
+
+.cpihConn-panelRow {
+  cursor: pointer;
+}
+
+.cpihConn-panelText {
   display: flex;
-  justify-content: flex-end;
-  align-items: center;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
 }
 
-.cpihConn-controls {
+.cpihConn-panelView {
   display: inline-flex;
+  flex: none;
   align-items: center;
-  gap: 0.25rem;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  color: var(--sapContent_IconColor, #556b82);
+  opacity: 0.6;
 }
 
-.cpihConn-headerBtn .sapMBtnIcon + .sapMBtnContent {
-  padding-inline-start: 0.375rem;
+.cpihConn-panelRow:hover .cpihConn-panelView,
+.cpihConn-panelView:focus-visible {
+  opacity: 1;
 }
 
+.cpihConn-panelView:hover {
+  color: var(--sapLinkColor, #0064d9);
+  background: var(--sapButton_Lite_Hover_Background, rgba(0, 100, 217, 0.08));
+}
+
+.cpihConn-panelView .icon {
+  margin: 0;
+}
+
+.cpihConn-panelEmpty,
+.cpihConn-panelOther {
+  margin: 4px 0 0;
+  color: var(--sapContent_LabelColor, #556b82);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+
+.cpihConn-panelSave.ui.form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.cpihConn-panelSave.ui.form input {
+  flex: 1;
+  min-width: 0;
+  min-height: 1.875rem;
+  padding: 0.25rem 0.5rem;
+}
+
+.cpihConn-panelSave .ui.button {
+  flex: none;
+  margin: 0 !important;
+}
+
+.cpihConn-panelLinks {
+  display: flex;
+  gap: 16px;
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--sapGroup_ContentBorderColor, #d9d9d9);
+  font-size: 0.8125rem;
+}
+
+.cpihConn-panelLinks a,
+.cpihConn-panelLinks a:visited {
+  color: var(--sapLinkColor, #0064d9);
+  text-decoration: none;
+}
+
+.cpihConn-panelLinks a:hover {
+  text-decoration: underline;
+}
+
+.cpihConn-hint {
+  margin-top: 4px;
+  font-size: 0.75rem;
+  color: var(--cpih-orange);
+}
+
+/* modals (Manage, details, Help) */
 .cpihConn-lead {
   margin: 0 0 0.75rem;
   color: var(--cpih-text-muted);
@@ -120,42 +207,13 @@ tr > td.yellow {
   margin-bottom: 0;
 }
 
-.cpihConn-summary {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  margin-bottom: 1rem;
-  color: var(--cpih-text-muted);
-}
-
-.cpihConn-summary .ui.label,
-.cpihConn-row-meta .ui.label {
-  margin: 0;
-}
-
-.cpihConn-hint {
-  margin-top: 0.375rem;
-  font-size: 0.8125rem;
-  color: var(--cpih-orange);
-}
-
 .cpihConn-section-title {
-  margin: 1rem 0 0.375rem;
+  margin: 0 0 0.375rem;
   font-size: 0.75rem;
   font-weight: 700;
   letter-spacing: 0.02em;
   text-transform: uppercase;
   color: var(--cpih-text-muted);
-}
-
-.cpihConn-section-title:first-child {
-  margin-top: 0;
-}
-
-.cpihConn-section-title .cpihConn-muted {
-  font-weight: 400;
-  letter-spacing: 0;
-  text-transform: none;
 }
 
 .cpihConn-muted {
@@ -189,27 +247,6 @@ tr > td.yellow {
   color: var(--cpih-text-muted);
 }
 
-.cpihConn-row--loadable {
-  cursor: pointer;
-}
-
-.cpihConn-row--loadable:hover {
-  background: var(--cpih-bg-hover);
-}
-
-.cpihConn-row--loadable:focus-visible {
-  outline: 2px solid var(--cpih-focus);
-  outline-offset: -2px;
-}
-
-.cpihConn-row--loadable > .icon {
-  color: var(--cpih-link);
-}
-
-.cpihConn-row--muted .cpihConn-row-name {
-  color: var(--cpih-text-muted);
-}
-
 .cpihConn-row-main {
   flex: 1 1 auto;
   min-width: 0;
@@ -230,6 +267,10 @@ tr > td.yellow {
   margin-top: 0.125rem;
   font-size: 0.8125rem;
   color: var(--cpih-text-muted);
+}
+
+.cpihConn-row-meta .ui.label {
+  margin: 0;
 }
 
 .cpihConn-dot {
