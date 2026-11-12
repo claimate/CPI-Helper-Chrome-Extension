@@ -1004,7 +1004,8 @@ function createButton(text, title, onClick) {
 function showNotification(title, message, type = 'info') {
     // Use CPI Helper's toast if available
     if (typeof showToast === 'function') {
-        showToast(title, message, type);
+        // CPI Helper signature is showToast(message, title, type)
+        showToast(message, title, type);
     } else {
         // Fallback to console
         console.log(`[Connectivity Manager] ${title}: ${message}`);
